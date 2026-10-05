@@ -70,10 +70,69 @@ static void test_edit_commit_and_cancel(void)
     assert(clock_display_hour(23, false) == 23);
 }
 
+static void test_idle_and_button_wake(void)
+{
+    clock_model_t c;
+    clock_init(&c, 0, 100);
+    assert(c.brightness == 25);
+    assert(!clock_should_blank(&c, CLOCK_IDLE_US + 99));
+    assert(clock_should_blank(&c, CLOCK_IDLE_US + 100));
+    clock_edit_begin(&c);
+    assert(!clock_should_blank(&c, CLOCK_IDLE_US * 2));
+    clock_edit_cancel(&c);
+    assert(clock_should_blank(&c, CLOCK_IDLE_US * 2));
+    c.screen_off = true;
+    assert(!clock_should_blank(&c, CLOCK_IDLE_US * 2));
+    /* Wake on each of the three keys; consume both short and long actions. */
+    for (unsigned key = 0; key < 3; key++) {
+        c.screen_off = true;
+        assert(!clock_input(&c, key, true, CLOCK_IDLE_US * 2));
+        assert(!c.screen_off);
+        assert(!clock_input(&c, key, false, CLOCK_IDLE_US * 2 + 100));
+        assert(!clock_input(&c, key, false, CLOCK_IDLE_US * 2 + 200));
+        assert(!clock_input(&c, key, true, CLOCK_IDLE_US * 2 + 300));
+        assert(clock_input(&c, key, false, CLOCK_IDLE_US * 2 + 400));
+    }
+    /* An overlapping press on another key must not unsuppress the wake key. */
+    c.screen_off = true;
+    assert(!clock_input(&c, 0, true, 90000000));
+    assert(!clock_input(&c, 1, true, 90000001));
+    assert(clock_input(&c, 1, false, 90000002));
+    assert(!clock_input(&c, 0, false, 90000003));
+    assert(!clock_should_blank(&c, 120000002));
+    assert(clock_should_blank(&c, 120000003));
+    assert(!clock_input(&c, 3, true, 120000004));
+    assert(c.last_input_us == 90000003);
+}
+
+static void test_sleep_elapsed_and_deadlines(void)
+{
+    clock_model_t c;
+    int64_t start = clock_encode((clock_date_t){2026,12,31,23,59,40});
+    clock_init(&c, start, 100);
+    assert(clock_wait_us(&c, 100) == 1000000);
+    assert(clock_wait_us(&c, 1000100) == 1000000);
+    clock_tick(&c, 1500100);
+    assert(clock_wait_us(&c, 1500100) == 500000);
+    assert(clock_wait_us(&c, CLOCK_IDLE_US + 99) == 1);
+    c.screen_off = true;
+    assert(clock_wait_us(&c, CLOCK_IDLE_US * 60 + 123) == CLOCK_IDLE_US);
+    /* A long timer gap represents Light-sleep; no restart and no lost remainder. */
+    clock_tick(&c, CLOCK_IDLE_US * 60 + 500100);
+    clock_date_t d = clock_decode(c.seconds);
+    assert(d.year == 2027 && d.month == 1 && d.day == 1);
+    assert(d.hour == 0 && d.minute == 29 && d.second == 40);
+    assert(!clock_input(&c, 2, true, CLOCK_IDLE_US * 60 + 500100));
+    assert(clock_wait_us(&c, CLOCK_IDLE_US * 60 + 500100) == 500000);
+    assert(c.seconds == start + 1800);
+}
+
 int main(void)
 {
     test_calendar_roundtrip();
     test_elapsed_and_rollover();
     test_edit_commit_and_cancel();
+    test_idle_and_button_wake();
+    test_sleep_elapsed_and_deadlines();
     puts("Clock model tests: PASS");
 }

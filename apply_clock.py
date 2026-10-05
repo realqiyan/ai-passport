@@ -25,8 +25,20 @@ def main():
             changes[path.relative_to(ROOT / "clock")] = path.read_bytes()
     defaults = git("show", "HEAD:sdkconfig.defaults").decode()
     defaults = defaults[:defaults.index("# --- Bluetooth LE")]
-    defaults += "# --- Offline clock ---\nCONFIG_BT_ENABLED=n\nCONFIG_LV_FONT_MONTSERRAT_48=y\n"
+    defaults += (
+        "# --- Offline clock ---\n"
+        "CONFIG_BT_ENABLED=n\n"
+        "CONFIG_LV_FONT_MONTSERRAT_48=y\n"
+        "CONFIG_PM_ENABLE=y\n"
+        "CONFIG_FREERTOS_USE_TICKLESS_IDLE=y\n"
+        "CONFIG_FREERTOS_IDLE_TIME_BEFORE_SLEEP=2\n"
+    )
     changes[Path("sdkconfig.defaults")] = defaults.encode()
+    # XTAL keeps the backlight PWM stable while CPU/APB frequencies change.
+    display = git("show", "HEAD:components/bsp/src/bsp_display.c").decode()
+    display = display.replace(".clk_cfg         = LEDC_AUTO_CLK,",
+                              ".clk_cfg         = LEDC_USE_XTAL_CLK,")
+    changes[Path("components/bsp/src/bsp_display.c")] = display.encode()
     gate = git("show", "HEAD:tools/validate.sh").decode()
     marker = '    echo "Host tests: PASS"'
     clock_test = '''    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \\
@@ -53,7 +65,7 @@ def main():
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(desired)
     state_path.write_text(json.dumps({p.as_posix(): hashlib.sha256(data).hexdigest() for p, data in changes.items()}, indent=2) + "\n")
-    print(f"Applied {len(changes)} clock files; BSP and dependency lock unchanged.")
+    print(f"Applied {len(changes)} clock files; backlight uses XTAL; dependency lock unchanged.")
 
 if __name__ == "__main__":
     main()

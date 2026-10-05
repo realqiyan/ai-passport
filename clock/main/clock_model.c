@@ -51,7 +51,7 @@ clock_date_t clock_decode(int64_t seconds)
 void clock_init(clock_model_t *c, int64_t seconds, int64_t now_us)
 {
     *c = (clock_model_t){ .seconds = seconds >= 0 && seconds < LIMIT_SECONDS ? seconds : 0,
-                         .anchor_us = now_us, .brightness = 80 };
+                         .anchor_us = now_us, .brightness = 25, .last_input_us = now_us };
 }
 
 void clock_tick(clock_model_t *c, int64_t now_us)
@@ -106,3 +106,38 @@ bool clock_edit_next(clock_model_t *c, int64_t now_us)
 void clock_edit_cancel(clock_model_t *c) { c->editing = false; }
 int clock_display_hour(int hour, bool twelve_hour) { return twelve_hour ? (hour % 12 ? hour % 12 : 12) : hour; }
 int clock_weekday(int64_t seconds) { return (int)((seconds / DAY_SECONDS + 6) % 7); }
+
+bool clock_input(clock_model_t *c, unsigned button, bool press, int64_t now_us)
+{
+    if (button >= 3) return false;
+    c->last_input_us = now_us;
+    unsigned bit = 1u << button;
+    if (c->screen_off) {
+        c->screen_off = false;
+        c->suppressed_buttons |= bit;
+        return false;
+    }
+    if (press) {
+        c->suppressed_buttons &= ~bit;
+        return false;
+    }
+    return (c->suppressed_buttons & bit) == 0;
+}
+
+bool clock_should_blank(const clock_model_t *c, int64_t now_us)
+{
+    return !c->screen_off && !c->editing && now_us >= c->last_input_us
+        && now_us - c->last_input_us >= CLOCK_IDLE_US;
+}
+
+int64_t clock_wait_us(const clock_model_t *c, int64_t now_us)
+{
+    if (c->screen_off) return INT64_C(30000000); /* Maximum task service interval. */
+    int64_t elapsed = now_us >= c->anchor_us ? now_us - c->anchor_us : 0;
+    int64_t wait = INT64_C(1000000) - elapsed % INT64_C(1000000);
+    if (!c->editing) {
+        int64_t idle = CLOCK_IDLE_US - (now_us - c->last_input_us);
+        if (idle < wait) wait = idle;
+    }
+    return wait > 0 ? wait : 1;
+}

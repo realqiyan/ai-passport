@@ -3,6 +3,8 @@
 #include "bsp_button.h"
 #include "bsp_display.h"
 #include "esp_log.h"
+#include "esp_pm.h"
+#include "esp_lvgl_port.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -11,6 +13,10 @@
 #include "nvs.h"
 #include "nvs_flash.h"
 #include <stdio.h>
+#include <stdarg.h>
+#include <string.h>
+
+#define BATTERY_INTERVAL_US INT64_C(30000000)
 
 LV_FONT_DECLARE(clock_font_16);
 
@@ -20,6 +26,8 @@ static clock_model_t clock_state;
 static nvs_handle_t settings;
 static bool storage_ok;
 static bool battery_ok;
+static bool buttons_ok;
+static esp_pm_lock_handle_t screen_lock;
 static bool save_failed;
 static lv_obj_t *time_label, *seconds_label, *date_label, *status_label;
 static lv_obj_t *battery_label, *format_label, *edit_label, *help_label;
@@ -68,28 +76,39 @@ static void build_ui(void)
     lv_screen_load(screen);
 }
 
+/* Call with the LVGL lock held. Unchanged labels do not invalidate the screen. */
+static void set_text(lv_obj_t *obj, const char *fmt, ...)
+{
+    char text[128];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(text, sizeof(text), fmt, args);
+    va_end(args);
+    if (strcmp(lv_label_get_text(obj), text) != 0) lv_label_set_text(obj, text);
+}
+
 static void render(int battery)
 {
     static const char *weekdays[] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
     static const char *fields[] = {"年", "月", "日", "时", "分"};
     clock_date_t d = clock_state.editing ? clock_state.draft : clock_decode(clock_state.seconds);
-    lv_label_set_text_fmt(time_label, "%02d:%02d", clock_display_hour(d.hour, clock_state.twelve_hour), d.minute);
-    lv_label_set_text_fmt(seconds_label, "%02d", d.second);
-    lv_label_set_text_fmt(date_label, "%04d-%02d-%02d", d.year, d.month, d.day);
-    lv_label_set_text_fmt(format_label, "%s  /  %s", weekdays[clock_weekday(clock_encode(d))],
+    set_text(time_label, "%02d:%02d", clock_display_hour(d.hour, clock_state.twelve_hour), d.minute);
+    set_text(seconds_label, "%02d", d.second);
+    set_text(date_label, "%04d-%02d-%02d", d.year, d.month, d.day);
+    set_text(format_label, "%s  /  %s", weekdays[clock_weekday(clock_encode(d))],
         clock_state.twelve_hour ? (d.hour < 12 ? "AM" : "PM") : "24H");
-    if (battery >= 0) lv_label_set_text_fmt(battery_label, "%d%%", battery);
-    else lv_label_set_text(battery_label, "--%");
-    lv_label_set_text(status_label, save_failed ? "保存失败" :
+    if (battery >= 0) set_text(battery_label, "%d%%", battery);
+    else set_text(battery_label, "--%");
+    set_text(status_label, save_failed ? "保存失败" :
         (!storage_ok ? "存储不可用" : (clock_state.confirmed ? "离线时钟" : "请设置时间")));
     if (clock_state.editing) {
-        lv_label_set_text_fmt(edit_label, "设置：%s", fields[clock_state.field]);
-        lv_label_set_text(help_label, "上加 下减 确定下一项\n长按确定取消");
+        set_text(edit_label, "设置：%s", fields[clock_state.field]);
+        set_text(help_label, "上加 下减 确定下一项\n长按确定取消");
     } else {
-        lv_label_set_text_fmt(edit_label, "亮度 %u%%", clock_state.brightness);
-        lv_label_set_text(help_label, "上键制式 下键亮度\n长按确定设置时间");
+        set_text(edit_label, "亮度 %u%%", clock_state.brightness);
+        set_text(help_label, "上键制式 下键亮度\n长按确定设置时间");
     }
-    lv_bar_set_value(second_bar, d.second, LV_ANIM_OFF);
+    if (lv_bar_get_value(second_bar) != d.second) lv_bar_set_value(second_bar, d.second, LV_ANIM_OFF);
 }
 
 static void save_settings(void)
@@ -137,9 +156,60 @@ static void process_input(input_t input, int64_t now_us)
 static void on_button(bsp_btn_t button, bsp_btn_ev_t event, void *user)
 {
     (void)user;
-    if (event != BSP_BTN_CLICK && !(button == BSP_BTN_OK && event == BSP_BTN_LONG)) return;
+    if (event != BSP_BTN_PRESS && event != BSP_BTN_CLICK && event != BSP_BTN_LONG) return;
     input_t input = {button, event};
     (void)xQueueSend(input_queue, &input, 0);
+}
+
+/* Keep Light-sleep disabled while PWM is visible. DFS remains enabled. */
+static void power_init(void)
+{
+    esp_err_t err = esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "clock_screen", &screen_lock);
+    if (err == ESP_OK) err = esp_pm_lock_acquire(screen_lock);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Screen power lock failed: %s", esp_err_to_name(err));
+        if (screen_lock) { esp_pm_lock_delete(screen_lock); screen_lock = NULL; }
+    }
+    const esp_pm_config_t config = {
+        .max_freq_mhz = 80,
+        .min_freq_mhz = 40,
+        .light_sleep_enable = screen_lock != NULL,
+    };
+    err = esp_pm_configure(&config);
+    if (err != ESP_OK) ESP_LOGE(TAG, "Power configuration failed: %s", esp_err_to_name(err));
+    else ESP_LOGI(TAG, "Power: 40-80 MHz; automatic Light-sleep %s", screen_lock ? "enabled when screen off" : "disabled");
+}
+
+/* Only the clock task owns screen and PM transitions; never call from callbacks. */
+static bool screen_set_awake(bool awake, int battery)
+{
+    if (!bsp_lvgl_lock(100)) return false;
+    esp_err_t err;
+    if (awake) {
+        if (screen_lock) ESP_ERROR_CHECK(esp_pm_lock_acquire(screen_lock));
+        err = lvgl_port_resume();
+        if (err == ESP_OK) {
+            render(battery);
+            (void)lvgl_port_task_wake(LVGL_PORT_EVENT_USER, NULL);
+            bsp_display_backlight((uint8_t)clock_state.brightness);
+        } else {
+            (void)lvgl_port_stop();
+            if (screen_lock) ESP_ERROR_CHECK(esp_pm_lock_release(screen_lock));
+        }
+    } else {
+        bsp_display_backlight(0);
+        err = lvgl_port_stop();
+        if (err == ESP_OK) {
+            if (screen_lock) ESP_ERROR_CHECK(esp_pm_lock_release(screen_lock));
+        } else {
+            (void)lvgl_port_resume();
+            bsp_display_backlight((uint8_t)clock_state.brightness);
+        }
+    }
+    bsp_lvgl_unlock();
+    if (err != ESP_OK) ESP_LOGE(TAG, "Screen transition failed: %s", esp_err_to_name(err));
+    else ESP_LOGI(TAG, "Screen %s", awake ? "on" : "off");
+    return err == ESP_OK;
 }
 
 static void clock_task(void *arg)
@@ -148,16 +218,32 @@ static void clock_task(void *arg)
     int battery = -1;
     int64_t battery_due = 0;
     for (;;) {
-        input_t input;
-        bool received = xQueueReceive(input_queue, &input, pdMS_TO_TICKS(100)) == pdTRUE;
         int64_t now = esp_timer_get_time();
+        if (!buttons_ok) clock_state.last_input_us = now;
+        int64_t wait_us = clock_wait_us(&clock_state, now);
+        if (battery_ok && battery_due - now < wait_us) wait_us = battery_due - now;
+        uint32_t wait_ms = wait_us > 0 ? (uint32_t)((wait_us + 999) / 1000) : 1;
+        TickType_t wait_ticks = pdMS_TO_TICKS(wait_ms);
+        input_t input;
+        bool received = xQueueReceive(input_queue, &input, wait_ticks ? wait_ticks : 1) == pdTRUE;
+        now = esp_timer_get_time();
         clock_tick(&clock_state, now);
-        if (received) process_input(input, now);
+        if (received) {
+            bool was_off = clock_state.screen_off;
+            bool action = clock_input(&clock_state, (unsigned)input.button,
+                                      input.event == BSP_BTN_PRESS, now);
+            if (was_off && !screen_set_awake(true, battery)) clock_state.screen_off = true;
+            if (action) process_input(input, now);
+        }
         if (battery_ok && now >= battery_due) {
             battery = bsp_battery_soc();
-            battery_due = now + INT64_C(30000000);
+            battery_due = now + BATTERY_INTERVAL_US;
         }
-        if (bsp_lvgl_lock(100)) {
+        if (buttons_ok && clock_should_blank(&clock_state, now)) {
+            if (screen_set_awake(false, battery)) clock_state.screen_off = true;
+            else clock_state.last_input_us = now; /* Retry later; avoid a busy loop. */
+        }
+        if (!clock_state.screen_off && bsp_lvgl_lock(100)) {
             render(battery);
             bsp_lvgl_unlock();
         }
@@ -198,6 +284,7 @@ void app_main(void)
         if (nvs_get_u8(settings, "format", &value) == ESP_OK && value <= 1) clock_state.twelve_hour = value;
         if (nvs_get_u8(settings, "brightness", &value) == ESP_OK && (value == 25 || value == 50 || value == 80)) clock_state.brightness = value;
     }
+    power_init();
     battery_ok = bsp_battery_init() == ESP_OK;
     if (bsp_display_init() != ESP_OK || !bsp_lvgl_init()) {
         ESP_LOGE(TAG, "Display initialization failed");
@@ -212,7 +299,8 @@ void app_main(void)
     input_queue = xQueueCreate(16, sizeof(input_t));
     if (!input_queue) { ESP_LOGE(TAG, "Input queue allocation failed"); return; }
     err = bsp_button_init(on_button, NULL);
-    if (err != ESP_OK) ESP_LOGE(TAG, "Buttons unavailable: %s", esp_err_to_name(err));
+    buttons_ok = err == ESP_OK;
+    if (!buttons_ok) ESP_LOGE(TAG, "Buttons unavailable; idle screen-off disabled: %s", esp_err_to_name(err));
     if (xTaskCreate(clock_task, "clock", 4096, NULL, 4, NULL) != pdPASS) {
         ESP_LOGE(TAG, "Clock task allocation failed");
         return;

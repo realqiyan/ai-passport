@@ -2,7 +2,7 @@
 
 更新日期：2026-10-05。适用基线：官方仓库 `33d3d1d93a1125b356b47b6d83a7a60121be801e`。
 
-2026-10-05 已在一台 macOS（Apple Silicon，Darwin 25.6）机器上按本文完成安装、构建和刷机，时钟应用已在设备上启动。下面保留通用流程，本机实际使用的路线见[从空环境安装](#从空环境安装)；当前状态见 [README](README.md)。
+2026-10-05 已在一台 macOS（Apple Silicon，Darwin 25.6）机器上按本文完成安装、构建和刷机，原版时钟应用已在设备上启动。本文新增的省电版本尚未构建或刷机。下面保留通用流程，本机实际使用的路线见[从空环境安装](#从空环境安装)；当前状态见 [README](README.md)。
 
 ## 快速开始
 
@@ -195,7 +195,91 @@ cd projects/ai-passport/source
 
 非 LVGL 任务访问 `lv_*` 前，先成功取得 `bsp_lvgl_lock()`；操作后释放锁。存储和电量读取在锁外执行。删除页面前，停止所有会访问该页面的任务、定时器和回调。
 
-时钟用一个任务处理输入、计时和保存。它每 100 ms 等待一次队列，用单调微秒值计算经过时间，不靠刷新次数计时。电量每 30 秒读取一次。校时草稿与正在运行的时间分开，取消草稿不改变当前时间。
+时钟用一个任务处理输入、计时和保存。亮屏时，队列等待至下一个整秒或空闲截止时间；按键事件提前结束等待。熄屏时，任务最多等待 30 秒，并保留电量采样截止时间。走时按单调微秒值计算，不靠刷新次数计时。电量每 30 秒读取一次。校时草稿与运行时间分开，取消草稿不改变当前时间。
+
+## 时钟低功耗方法
+
+更新日期：2026-10-05。用户已确认采用以下四项改动。源码和主机测试已完成；此省电版本尚未完成固件构建、设备验证或电流测量。此前 macOS 构建和设备结果属于原版时钟，不能作为此版本的验收结果。
+
+### 已实现的行为
+
+| 方法 | 实现 | 条件和边界 |
+| --- | --- | --- |
+| 降低背光 | `clock_init()` 默认亮度从 80% 改为 25% | 保留 NVS 中已保存的亮度。已有 80% 设置的设备须按下键切到 25% 或 50% |
+| 减少更新 | `clock_wait_us()` 等待下一个整秒；`set_text()` 比较文字后才更新；进度条只在秒数改变时更新 | 按键立即结束队列等待。LVGL 自身的亮屏定时器保持基线配置，应用每秒刷新不等于 LVGL 每秒运行一次 |
+| 动态降频与轻睡眠 | `esp_pm_configure()` 配置 CPU 40–80 MHz；空闲熄屏后允许自动 Light-sleep | 亮屏持有 `ESP_PM_NO_LIGHT_SLEEP` 锁，以防 PWM 在轻睡眠中停止而闪烁。亮屏仍允许动态降频 |
+| 空闲熄屏和按键唤醒 | 30 秒无输入时关闭背光、停止 LVGL 定时器；任意键恢复显示 | 校时期间不熄屏。第一次按键只唤醒，该次按键的短按或长按不改变设置 |
+
+时钟继续使用自己的单页界面。按键、校时与保存方式不变。按键初始化失败时禁用自动熄屏，避免设备熄屏后无法操作。省电模式不按秒写 NVS，也不启动 Wi-Fi、BLE 或音频任务。
+
+### 配置与恢复
+
+从工作区根目录运行以下命令，将长期保存的源码和配置应用到固定官方基线：
+
+```bash
+python3 projects/ai-passport/apply_clock.py
+```
+
+脚本在 `source/sdkconfig.defaults` 中生成：
+
+```text
+CONFIG_PM_ENABLE=y
+CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
+CONFIG_FREERTOS_IDLE_TIME_BEFORE_SLEEP=2
+```
+
+`clock/main/CMakeLists.txt` 声明 `esp_pm` 和 `esp_lvgl_port` 依赖。运行时配置最大 CPU 频率 80 MHz、最低频率 40 MHz。自动 Light-sleep 由 FreeRTOS 空闲机制执行，任务不直接调用 `esp_light_sleep_start()`。参见 [ESP-IDF 5.5.3 电源管理](https://docs.espressif.com/projects/esp-idf/en/v5.5.3/esp32c3/api-reference/system/power_management.html)。
+
+脚本还将 BSP 的背光 LEDC 时钟从 `LEDC_AUTO_CLK` 改为 `LEDC_USE_XTAL_CLK`，使 PWM 不随 APB 降频变化。此板目标为 ESP32-C3；将这项改动用于其他芯片前，核对其时钟支持。脚本继续保护本地修改，依赖锁文件不变。此项 BSP 改动由脚本从固定基线生成，不在 `clock/` 重复保存整份驱动。
+
+完整验证使用隔离的 `sdkconfig.defaults` 配置。旧的增量构建目录可能仍使用旧 `sdkconfig`，须核对上面三项配置；仅执行 `idf.py build` 不能证明省电配置已生效。新配置的恢复和交付仍使用[验证与交付](#验证与交付)中的门禁。
+
+### 熄屏和唤醒顺序
+
+只有时钟任务执行以下操作。按键回调仅入队。访问 LVGL 和调用 port 暂停、恢复时均持有 `bsp_lvgl_lock()`。
+
+1. 空闲满 30 秒且未校时时，将背光设为 0。
+2. 调用 `lvgl_port_stop()`，停止 LVGL tick 和 LVGL 定时器处理。
+3. 暂停成功后释放屏幕的 `ESP_PM_NO_LIGHT_SLEEP` 锁，标记熄屏。
+4. 收到任意按键按下事件时，取得屏幕电源锁并调用 `lvgl_port_resume()`。
+5. 更新当前时间，通知 LVGL 任务并恢复用户保存的亮度。
+6. 消费此次按键后续的短按或长按。下一次按下该键后恢复正常操作。
+
+暂停失败时恢复 LVGL 和亮度，并延后再次尝试。唤醒失败时保留熄屏状态，下次按键重试。电源锁创建失败时关闭自动 Light-sleep，仅尝试动态降频，并记录错误。电源配置失败时记录错误；不能将此设备视为已启用省电。
+
+使用的是 [esp_lvgl_port 2.9.0](https://components.espressif.com/components/espressif/esp_lvgl_port/versions/2.9.0/readme) 的公开接口。已核对注册版本所指向的[固定提交源码](https://github.com/espressif/esp-bsp/blob/f0ef9497efce684997ce391edd19733483e250a5/components/esp_lvgl_port/src/lvgl9/esp_lvgl_port.c)。不删除页面，不重建 SPI 或 I²C 总线，也不调用终端关闭接口 `bsp_display_prepare_deep_sleep()`。
+
+### 睡眠、走时和功耗边界
+
+熄屏只关闭背光并停止 LVGL 处理，未让 ST7789 进入 Sleep In。面板、共享总线、电量计和按键 ADC 资源仍存在。ST7789 是带背光的 LCD，黑色背景不能按 OLED 的规则推定明显省电。
+
+三个按键共用 GPIO0 的 ADC 分压输入。本版保留 ADC 采样，由定时器唤醒芯片后识别按键，再由应用恢复显示。它不是 GPIO 硬件按键唤醒，Light-sleep 时长受按键采样周期和其他任务、定时器、电源锁限制。逐键验证响应时间；不能宣称芯片熄屏后持续睡眠 30 秒。若要进一步减少轮询，须先实测各键数字门限，再设计 ADC 释放和恢复接口。
+
+Light-sleep 保留内存。ESP-IDF 在唤醒后为 `esp_timer_get_time()` 补上睡眠时间，现有 `clock_tick()` 按经过时间补齐走时。睡眠不触发 NVS 保存。参见 [ESP Timer](https://docs.espressif.com/projects/esp-idf/en/v5.5.3/esp32c3/api-reference/system/esp_timer.html)。
+
+不要直接替换为 Deep-sleep。深睡会重新启动应用，当前程序将回到最后保存的校时时间。采用深睡前须实现时间恢复。芯片内置 RTC 在供电睡眠时可计时，不能代替独立的断电计时器。慢时钟温度漂移仍需测量。参见[系统时间](https://docs.espressif.com/projects/esp-idf/en/v5.5.3/esp32c3/api-reference/system/system_time.html)。
+
+音频芯片、功放和常供电电路仍有待机负载。当前 `bsp_audio_sleep()` 在音频未初始化时直接返回，不能证明 ES8311 已收到休眠命令。`BSP_I2S_PA_CTRL=-1` 表明没有 MCU 功放控制脚。若电流测量发现这部分负载显著，再增加最小的控制口休眠能力；无需长期启动 I²S。
+
+### 验证与实测方法
+
+本轮 `./tools/validate.sh --static` 全部通过，新增时钟测试覆盖熄屏边界、校时期间不熄屏、三键唤醒、首次按键消费、交叉按键和休眠后跨日进位。时钟测试还通过 AddressSanitizer 与 UndefinedBehaviorSanitizer。
+
+当前 Linux 环境未完成 ESP-IDF Python 环境安装，`env.sh` 报 `idf5.5_py3.13_env/bin/python` 不存在。固件门禁因 `idf.py` 不可用而停止，尚未生成此版本的新固件。按[从空环境安装](#从空环境安装)补齐环境，然后运行完整门禁。之前的归档哈希不能作为本轮交付文件。
+
+设备验收按以下步骤执行：
+
+1. 核对启动日志的 `Power: 40-80 MHz` 配置。若有电源配置错误，先修复错误。
+2. 将已保存的亮度手动调到 25%。检查可读性、中文显示和设置保存。
+3. 等待 30 秒，确认熄屏。分别用上、下、确定键唤醒，确认第一次按键未改制式、亮度或校时状态。
+4. 熄屏时长按确定，确认只唤醒。再次长按确定，确认进入校时。
+5. 进入校时并等待超过 30 秒，确认屏幕保持亮起。
+6. 多次熄屏和唤醒，确认显示、按键与存储正常。跨分钟、跨日和长时间熄屏后核对走时。
+7. 使用电流表，在相同供电、相近电池状态下比较 80%/50%/25% 背光、减少更新、动态降频和熄屏的平均电流。
+
+区分电池供电、USB 连接及充电状态。充电电流不是应用耗电，USB 调试也可能影响睡眠。需要核实实际睡眠时，可临时启用 `CONFIG_PM_PROFILING` 并用 `esp_pm_dump_locks(stdout)` 查看电源锁和睡眠时间，再按无 USB 供电条件测电流。未实测前，不提供节电百分比或续航倍数。
+
+新固件构建通过后，仍按应用分区升级并核对设备布局，避免覆盖 `cardid`、`easter` 和 `recovery`。本轮未刷机。
 
 ## 中文字体
 

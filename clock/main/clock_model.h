@@ -2,6 +2,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#define CLOCK_IDLE_US INT64_C(30000000)
+
 typedef struct { int year, month, day, hour, minute, second; } clock_date_t;
 typedef enum { CLOCK_YEAR, CLOCK_MONTH, CLOCK_DAY, CLOCK_HOUR, CLOCK_MINUTE, CLOCK_FIELD_COUNT } clock_field_t;
 typedef struct {
@@ -13,6 +15,9 @@ typedef struct {
     bool confirmed;
     bool twelve_hour;
     unsigned brightness;
+    int64_t last_input_us;
+    bool screen_off;
+    unsigned suppressed_buttons;
 } clock_model_t;
 
 int clock_days_in_month(int year, int month);
@@ -28,3 +33,8 @@ bool clock_edit_next(clock_model_t *clock, int64_t now_us);
 void clock_edit_cancel(clock_model_t *clock);
 int clock_display_hour(int hour, bool twelve_hour);
 int clock_weekday(int64_t seconds); /* Sunday = 0. */
+
+/* Press wakes the screen. Consume all actions from that press until the next press. */
+bool clock_input(clock_model_t *clock, unsigned button, bool press, int64_t now_us);
+bool clock_should_blank(const clock_model_t *clock, int64_t now_us);
+int64_t clock_wait_us(const clock_model_t *clock, int64_t now_us);
