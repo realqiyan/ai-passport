@@ -1,5 +1,19 @@
 #include "voice_protocol.h"
 #include <string.h>
+/* Discovery exposes no configuration. TCP still requires the saved token. */
+size_t vp_discovery_reply(const uint8_t *data, size_t size, uint8_t *out, size_t capacity) {
+    const char request[] = "PASSPORT_VOICE_DISCOVER_V1 ";
+    const char response[] = "PASSPORT_VOICE_V1 ";
+    size_t prefix = sizeof(request) - 1, result_size = sizeof(response) - 1 + 32;
+    if (size != prefix + 32 || capacity < result_size || memcmp(data, request, prefix))
+        return 0;
+    for (size_t i = prefix; i < size; i++)
+        if (!((data[i] >= '0' && data[i] <= '9') || (data[i] >= 'a' && data[i] <= 'f')))
+            return 0;
+    memcpy(out, response, sizeof(response) - 1);
+    memcpy(out + sizeof(response) - 1, data + prefix, 32);
+    return result_size;
+}
 static uint32_t crc_step(uint32_t crc, const uint8_t *p, size_t n) {
     while (n--) {
         crc ^= *p++;

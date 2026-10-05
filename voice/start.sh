@@ -17,7 +17,7 @@ usage() {
 
 串口和设备 IP 可以省略：
   usb   只有一个 /dev/cu.usbmodem* 时自动使用
-  wifi  沿用上次记住的设备 IP
+  wifi  自动查找局域网设备；未找到时尝试上次记住的设备 IP
 
 桥接选项原样传给 `passport-voice run`，例如 --output 'BlackHole 2ch'
 或 --mic-device ''（不改动系统默认输入）。
@@ -65,10 +65,10 @@ wifi)
     host="$(address "$@")"
     if [ -n "$host" ]; then
         shift
-    elif [ -r "$remembered" ]; then
-        host="$(cat "$remembered")"
+    else
+        printf '正在查找局域网中的 Passport，请先在设备上选择 Wi-Fi 模式。\n' >&2
+        exec "$voice" run --discover --host-file "$remembered" "$@"
     fi
-    [ -n "$host" ] || die "请给出设备 IP，例如：$here/start.sh wifi 192.0.2.2"
     mkdir -p "$(dirname "$remembered")"
     printf '%s\n' "$host" >"$remembered"
     printf 'Wi-Fi 链路：%s\n' "$host" >&2

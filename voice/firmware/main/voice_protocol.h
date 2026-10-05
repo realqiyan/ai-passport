@@ -16,3 +16,4 @@ typedef struct {
 } vp_parser_t;
 size_t vp_encode(uint8_t *out, uint8_t type, uint32_t sequence, const void *data, size_t size);
 void vp_feed(vp_parser_t *parser, const void *data, size_t size, vp_handler_t handler, void *ctx);
+size_t vp_discovery_reply(const uint8_t *data, size_t size, uint8_t *out, size_t capacity);

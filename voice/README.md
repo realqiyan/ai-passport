@@ -4,9 +4,9 @@
 
 **2026-10-05 设计变更**：原设计的 BLE 键盘投递不可用。macOS 从未把 `Passport Voice` 挂载成 HID 键盘，蓝牙设置里也没有连接入口。快捷键改由桥接程序注入；设备只发送一条 `{"event":"shortcut","modifiers":N,"key":N}` 请求，不参与按键合成。BLE HID 代码已从固件移除，设备不再初始化蓝牙。
 
-2026-10-05 当前版本：支持确认键临时输入、再次确认结束并关麦，以及保存或临时覆盖快捷键。完整固件门禁通过；桥接测试 51 项中 49 项通过、2 项因 Linux 缺少 macOS 框架跳过，脚本与刷机测试 25 项通过。该轮未刷写设备。省电规则、迁移步骤及未验证边界见下文和 [审查记录](REVIEW.md)。
+2026-10-05 当前版本：支持确认键临时输入、再次确认结束并关麦、保存或临时覆盖快捷键，以及 Wi-Fi 自动发现。完整固件门禁通过；桥接测试 59 项中 57 项通过、2 项因 Linux 缺少 macOS 框架跳过，脚本与刷机测试 26 项通过。本轮未刷写设备。省电规则、迁移步骤及未验证边界见下文和 [审查记录](REVIEW.md)。
 
-2026-10-06 从源码重建并写入设备。本轮在 macOS 重新克隆官方基线（改用 Gitee 镜像，见下文）、运行 `apply_voice.py`，完整门禁通过。应用镜像 1,212,512 字节，SHA-256 `8661b8b0af43e7ec522f92ff0374d977a69a168b8ef076d0aeac630f72f11217`；ELF SHA-256 `c8405d0d…`；归档 `voice-source/build/firmware/bbd52b10be55a7626f5dc0f2f34a13d186190b1d3fe84d642125a6810c94ae01/`，`archive_firmware.py verify` 通过。刷写只写 `0x10000` 应用分区，回读校验一致；启动日志显示 `Loaded app from partition at offset 0x10000`，未见 panic 或重启。设备 MAC 为 `98:c3:77:f5:72:4c`。固件的日志等级在构建时被关闭，串口不输出应用行。本轮未做应用功能实机验收。
+2026-10-06 不含自动发现的上一版固件从源码重建并写入设备。本轮在 macOS 重新克隆官方基线（改用 Gitee 镜像，见下文）、运行 `apply_voice.py`，完整门禁通过。应用镜像 1,212,512 字节，SHA-256 `8661b8b0af43e7ec522f92ff0374d977a69a168b8ef076d0aeac630f72f11217`；ELF SHA-256 `c8405d0d…`；归档 `voice-source/build/firmware/bbd52b10be55a7626f5dc0f2f34a13d186190b1d3fe84d642125a6810c94ae01/`，`archive_firmware.py verify` 通过。刷写只写 `0x10000` 应用分区，回读校验一致；启动日志显示 `Loaded app from partition at offset 0x10000`，未见 panic 或重启。设备 MAC 为 `98:c3:77:f5:72:4c`。固件的日志等级在构建时被关闭，串口不输出应用行。本轮未做应用功能实机验收。
 
 当前版本是独立应用，固件启动进入语音页面。设备重启后麦克风关闭，音频传输默认为 USB。
 
@@ -26,7 +26,7 @@ projects/ai-passport/voice/configure.sh <串口> --shortcut ctrl+shift+v
 
 # 每次使用，二选一
 projects/ai-passport/voice/start.sh usb       # 有线
-projects/ai-passport/voice/start.sh wifi      # 无线，沿用上次记住的 IP
+projects/ai-passport/voice/start.sh wifi      # 无线，自动查找局域网设备
 ```
 
 安装脚本会建虚拟环境、装桥接程序、检查 BlackHole 2ch，并在缺失时创建聚合设备 `Passport Mic`。它不安装任何系统软件包，缺少 BlackHole 时会给出命令并停止。
@@ -42,7 +42,7 @@ projects/ai-passport/voice/start.sh wifi      # 无线，沿用上次记住的 I
 | --- | --- |
 | `install.sh` | 安装或更新 Mac 侧。只写自己目录内的文件和聚合设备 |
 | `start.sh usb [串口]` | 有线链路。串口省略时使用唯一的 `/dev/cu.usbmodem*` |
-| `start.sh wifi [IP]` | 无线链路。IP 省略时沿用上次的值，记在 `voice/.local/host` |
+| `start.sh wifi [IP]` | 无线链路。IP 省略时自动发现设备；发现超时后尝试 `voice/.local/host` 中的上次地址 |
 | `configure.sh [串口] --shortcut <组合键>` | 保存设备快捷键；可同时设置 Wi-Fi |
 | `flash.sh --list-ports` | 列出串口、设备描述及 USB 标识；不打开串口 |
 | `flash.sh <串口> <应用镜像>` | 检查设备分区，只刷应用并回读校验 |
@@ -206,10 +206,16 @@ projects/ai-passport/voice/bridge/.venv/bin/passport-voice configure \
 配置完成后停止 USB 桥接，关闭麦克风，按下键切到 Wi-Fi，然后：
 
 ```bash
-projects/ai-passport/voice/start.sh wifi <设备IP>
+projects/ai-passport/voice/start.sh wifi
 ```
 
-Mac 程序连接设备的 TCP `8765` 端口，网络必须允许同一局域网内的设备互访。Wi-Fi 链路使用令牌校验访问，TCP 音频没有应用层加密，此版本用于可信局域网。只允许 USB 保存配置，网络客户端不能修改密码或快捷键。
+自动发现需要安装包含发现功能的新固件，并更新 Mac 桥接程序（重新运行 `install.sh`）。配网只保存网络和令牌；设备重启仍进入 USB 模式，需关麦后按下键切到 Wi-Fi。等待屏幕显示已取得 IP，再启动无线桥接。
+
+桥接程序在启动时向局域网广播 UDP `8765` 请求，最多等待 3 秒。每次启动重新查找，路由器更换设备 IP 后也可连接。发现报文只有协议标识和随机请求编号，不包含密码或令牌；TCP 连接仍验证已保存的令牌。验证成功后保存新 IP。找到多台设备时停止并列出 IP，不自动选择。
+
+发现超时后尝试上次保存的地址，兼容旧固件。首次使用旧固件、广播被路由器阻止或找到多台设备时，可手动指定屏幕上的地址：`start.sh wifi <设备IP>`。上次地址失效时也需手动指定。macOS 若提示本地网络访问，应允许运行桥接的终端访问。
+
+Mac 程序连接设备的 TCP `8765` 端口，网络必须允许同一局域网内的设备互访；自动发现还需允许 UDP 广播。Wi-Fi 链路使用令牌校验访问，TCP 音频没有应用层加密，此版本用于可信局域网。只允许 USB 保存配置，网络客户端不能修改密码或快捷键。
 
 连接中断时，麦克风采集暂停，快捷键被阻止。恢复连接后重新运行桥接程序，状态心跳期限为三秒，设备不重放断线期间的按键。
 

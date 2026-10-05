@@ -55,6 +55,7 @@ typedef struct {
 static uint32_t audio_sequence;
 static uint32_t drops;
 static int listener = -1, client = -1;
+static int discovery = -1;
 static bool authenticated;
 static vp_parser_t usb_parser, wifi_parser;
 static char result[64] = "boot";
@@ -114,6 +115,10 @@ static void update_wifi(void) {
             close(listener);
             listener = -1;
         }
+        if (discovery >= 0) {
+            close(discovery);
+            discovery = -1;
+        }
         if (wifi_started) {
             (void)esp_wifi_stop();
             wifi_started = false;
@@ -156,6 +161,40 @@ static void update_wifi(void) {
     }
     if (!wifi_got_ip && client >= 0)
         close_client();
+    if (!wifi_got_ip && discovery >= 0) {
+        close(discovery);
+        discovery = -1;
+    }
+    if (wifi_got_ip && discovery < 0) {
+        discovery = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        if (discovery >= 0) {
+            struct sockaddr_in addr = {.sin_family = AF_INET,
+                                       .sin_port = htons(VOICE_PORT),
+                                       .sin_addr.s_addr = htonl(INADDR_ANY)};
+            if (bind(discovery, (struct sockaddr *)&addr, sizeof(addr)) < 0 ||
+                fcntl(discovery, F_SETFL, O_NONBLOCK) < 0) {
+                close(discovery);
+                discovery = -1;
+            }
+        }
+    }
+}
+static void answer_discovery(void) {
+    static int64_t last_reply;
+    if (discovery < 0)
+        return;
+    uint8_t request[80], response[80];
+    struct sockaddr_in peer;
+    socklen_t size = sizeof(peer);
+    int n = recvfrom(discovery, request, sizeof(request), 0, (struct sockaddr *)&peer, &size);
+    if (n <= 0)
+        return;
+    size_t length = vp_discovery_reply(request, (size_t)n, response, sizeof(response));
+    int64_t now = esp_timer_get_time();
+    if (length && now - last_reply >= 100000) {
+        last_reply = now;
+        (void)sendto(discovery, response, length, 0, (struct sockaddr *)&peer, size);
+    }
 }
 static bool write_frame(bool wifi, uint8_t type, uint32_t seq, const void *data, size_t size) {
     uint8_t packet[VP_HEADER + VP_MAX_PAYLOAD];
@@ -358,6 +397,7 @@ static void transport_task(void *arg) {
         if (n > 0)
             vp_feed(&usb_parser, input, n, command, NULL);
         update_wifi();
+        answer_discovery();
         if (listener >= 0 && client < 0) {
             client = accept(listener, NULL, NULL);
             if (client >= 0) {

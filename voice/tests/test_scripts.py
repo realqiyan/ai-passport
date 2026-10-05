@@ -60,7 +60,16 @@ printf 'remove\\n' >>"$CALL_LOG"''')
         self.log.unlink()
         result = self.run_script('start.sh', 'wifi')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.log.read_text().splitlines(), ['run', '--host', '192.0.2.1'])
+        self.assertEqual(self.log.read_text().splitlines(),
+                         ['run', '--discover', '--host-file', str(self.root / '.local/host')])
+
+    def test_wifi_without_saved_host_discovers_and_preserves_options(self):
+        result = self.run_script('start.sh', 'wifi', '--shortcut', 'ctrl+shift+v')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.log.read_text().splitlines(),
+                         ['run', '--discover', '--host-file', str(self.root / '.local/host'),
+                          '--shortcut', 'ctrl+shift+v'])
+        self.assertFalse((self.root / '.local/host').exists())
 
     def test_unknown_mode_fails(self):
         self.assertEqual(self.run_script('start.sh', 'invalid').returncode, 2)

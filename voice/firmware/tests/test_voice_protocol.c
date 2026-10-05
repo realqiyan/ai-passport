@@ -70,5 +70,17 @@ int main(void) {
     assert(!voice_should_blank(30000000, 0, false, true, true));
     assert(!voice_should_blank(30000000, 0, false, false, false));
     assert(!voice_should_blank(0, 1, false, false, true));
-    puts("Voice protocol, trigger and idle tests: PASS");
+    uint8_t discovery_request[] = "PASSPORT_VOICE_DISCOVER_V1 0123456789abcdef0123456789abcdef";
+    const char discovery_expected[] = "PASSPORT_VOICE_V1 0123456789abcdef0123456789abcdef";
+    uint8_t discovery_response[80];
+    assert(vp_discovery_reply(discovery_request, sizeof(discovery_request) - 1,
+                              discovery_response, sizeof(discovery_response)) == sizeof(discovery_expected) - 1);
+    assert(!memcmp(discovery_response, discovery_expected, sizeof(discovery_expected) - 1));
+    assert(!vp_discovery_reply(discovery_request, sizeof(discovery_request), discovery_response, 80));
+    assert(!vp_discovery_reply(discovery_request, sizeof(discovery_request) - 1, discovery_response, 1));
+    discovery_request[sizeof(discovery_request) - 2] = 'g';
+    assert(!vp_discovery_reply(discovery_request, sizeof(discovery_request) - 1, discovery_response, 80));
+    discovery_request[0] = '!';
+    assert(!vp_discovery_reply(discovery_request, sizeof(discovery_request) - 1, discovery_response, 80));
+    puts("Voice protocol, trigger, discovery and idle tests: PASS");
 }

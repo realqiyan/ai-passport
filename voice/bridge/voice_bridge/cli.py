@@ -14,6 +14,7 @@ from .hostaudio import CoreAudio, InputSwitcher
 from .protocol import COMMAND, PCM, STATUS, Parser, encode
 from .shortcut import Injector, trusted
 from .transport import SerialLink, TcpLink
+from .discovery import discover_host
 
 MODIFIERS = {"ctrl": 1, "shift": 2, "alt": 4, "cmd": 8}
 KEYS = {"space": 0x2c, "enter": 0x28, "escape": 0x29, "tab": 0x2b}
@@ -89,11 +90,23 @@ def save_token(path, token):
         temporary.unlink(missing_ok=True)
 
 def open_session(args):
+    if getattr(args, "discover", False):
+        try:
+            args.host = discover_host()
+        except TimeoutError:
+            if not args.host_file.is_file() or not args.host_file.read_text().strip():
+                raise
+            args.host = args.host_file.read_text().strip()
+            print(f"Discovery timed out; trying saved address {args.host}.", file=sys.stderr)
+        print(f"Wi-Fi device: {args.host}", file=sys.stderr)
     link = SerialLink(args.serial) if args.serial else TcpLink(args.host)
     session = Session(link)
     try:
         token = read_token(args.token_file) if args.host else ""
         session.request("hello", token=token)
+        if getattr(args, "discover", False):
+            args.host_file.parent.mkdir(parents=True, exist_ok=True)
+            args.host_file.write_text(args.host + "\n")
         return session
     except BaseException:
         link.close()
@@ -276,6 +289,9 @@ def main(argv=None):
     transport = bridge.add_mutually_exclusive_group(required=True)
     transport.add_argument("--serial")
     transport.add_argument("--host")
+    transport.add_argument("--discover", action="store_true", help="Find a device on the local network")
+    bridge.add_argument("--host-file", type=Path, default=DEFAULT_TOKEN.with_name("host"),
+        help="Saved address to try when discovery times out")
     bridge.add_argument("--shortcut", type=shortcut,
         help="Override the device shortcut for this run; configure saves a shortcut on the device")
     bridge.add_argument("--output", default="BlackHole 2ch")
