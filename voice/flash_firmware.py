@@ -60,14 +60,38 @@ def flash(port, firmware):
         subprocess.run(base + ['verify_flash', '0x10000', str(application)], check=True)
 
 
+def list_ports():
+    try:
+        from serial.tools import list_ports as serial_ports
+    except ImportError as error:
+        raise RuntimeError('Activate ESP-IDF or install esptool==4.12.0 in this Python environment') from error
+    ports = sorted(serial_ports.comports(), key=lambda port: port.device)
+    if not ports:
+        print('No serial ports found. Connect the device with a USB data cable.')
+        return
+    for port in ports:
+        usb = (f' [USB {port.vid:04x}:{port.pid:04x}]'
+               if port.vid is not None and port.pid is not None else '')
+        print(f'{port.device}: {port.description}{usb}')
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('port', help='Explicit device serial port; stop the bridge first')
-    parser.add_argument('firmware', type=Path, help='Application .bin, not the merged image')
+    parser.add_argument('--list-ports', action='store_true',
+                        help='List serial ports without opening or resetting the device')
+    parser.add_argument('port', nargs='?', help='Explicit device serial port; stop the bridge first')
+    parser.add_argument('firmware', nargs='?', type=Path, help='Application .bin, not the merged image')
     args = parser.parse_args(argv)
+    if args.list_ports and (args.port is not None or args.firmware is not None):
+        parser.error('--list-ports cannot be combined with a port or firmware')
+    if not args.list_ports and (args.port is None or args.firmware is None):
+        parser.error('Specify a port and firmware. Use --list-ports to find the device port.')
     try:
-        flash(args.port, args.firmware)
-    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        if args.list_ports:
+            list_ports()
+        else:
+            flash(args.port, args.firmware)
+    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
         print(f'Flash failed: {error}', file=sys.stderr)
         return 1
     return 0

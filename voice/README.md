@@ -4,7 +4,7 @@
 
 **2026-10-05 设计变更**：原设计的 BLE 键盘投递不可用。macOS 从未把 `Passport Voice` 挂载成 HID 键盘，蓝牙设置里也没有连接入口。快捷键改由桥接程序注入；设备只发送一条 `{"event":"shortcut","modifiers":N,"key":N}` 请求，不参与按键合成。BLE HID 代码已从固件移除，设备不再初始化蓝牙。
 
-2026-10-05 当前版本：支持确认键临时输入、再次确认结束并关麦，以及保存或临时覆盖快捷键。完整固件门禁通过；桥接测试 51 项中 49 项通过、2 项因 Linux 缺少 macOS 框架跳过，脚本与刷机测试 21 项通过。本轮未刷写设备。省电规则、迁移步骤及未验证边界见下文和 [审查记录](REVIEW.md)。
+2026-10-05 当前版本：支持确认键临时输入、再次确认结束并关麦，以及保存或临时覆盖快捷键。完整固件门禁通过；桥接测试 51 项中 49 项通过、2 项因 Linux 缺少 macOS 框架跳过，脚本与刷机测试 25 项通过。本轮未刷写设备。省电规则、迁移步骤及未验证边界见下文和 [审查记录](REVIEW.md)。
 
 当前版本是独立应用，固件启动进入语音页面。设备重启后麦克风关闭，音频传输默认为 USB。时钟源码保留在相邻 `clock/` 目录。
 
@@ -15,7 +15,8 @@
 projects/ai-passport/voice/install.sh
 
 # 首次安装或升级设备固件：先构建，命令见“固件安装”
-# 激活 ESP-IDF 后，只写应用分区
+# 激活 ESP-IDF 后，先列出串口，再只写应用分区
+projects/ai-passport/voice/flash.sh --list-ports
 projects/ai-passport/voice/flash.sh <串口> <归档目录>/FoloToy-AI-Passport.bin
 
 # 可选：保存与输入法相同的快捷键。先停止 USB 桥接。
@@ -41,6 +42,7 @@ projects/ai-passport/voice/start.sh wifi      # 无线，沿用上次记住的 I
 | `start.sh usb [串口]` | 有线链路。串口省略时使用唯一的 `/dev/cu.usbmodem*` |
 | `start.sh wifi [IP]` | 无线链路。IP 省略时沿用上次的值，记在 `voice/.local/host` |
 | `configure.sh [串口] --shortcut <组合键>` | 保存设备快捷键；可同时设置 Wi-Fi |
+| `flash.sh --list-ports` | 列出串口、设备描述及 USB 标识；不打开串口 |
 | `flash.sh <串口> <应用镜像>` | 检查设备分区，只刷应用并回读校验 |
 | `uninstall.sh` | 卸载 Mac 侧，即 `install.sh` 的逆操作 |
 
@@ -283,9 +285,10 @@ PYTHONPATH=projects/ai-passport/voice/bridge python3 -m unittest discover -s pro
 
 先按上面的“源码与构建”恢复源码并运行门禁。门禁会把应用镜像保存在 `voice-source/build/firmware/<合并镜像哈希>/FoloToy-AI-Passport.bin`。
 
-在已经激活 ESP-IDF 的会话中，从工作区根目录运行：
+在已经激活 ESP-IDF 的会话中，从工作区根目录运行。先用 `--list-ports` 找到设备串口，再将它填入刷机命令。枚举不会打开串口或复位设备：
 
 ```bash
+projects/ai-passport/voice/flash.sh --list-ports
 projects/ai-passport/voice/flash.sh /dev/cu.usbmodemXXXX \
   projects/ai-passport/voice-source/build/firmware/<归档哈希>/FoloToy-AI-Passport.bin
 ```

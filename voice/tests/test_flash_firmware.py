@@ -1,4 +1,8 @@
 import importlib.util
+import contextlib
+import io
+from types import SimpleNamespace
+import sys
 from pathlib import Path
 import struct
 import tempfile
@@ -83,3 +87,41 @@ class FlashTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     flash.flash('/dev/cu.test', firmware)
             self.assertFalse(any('write_flash' in c.args[0] for c in commands.call_args_list))
+
+
+class PortListTests(unittest.TestCase):
+    def test_lists_ports_without_flashing_or_opening_them(self):
+        enumeration = SimpleNamespace(comports=lambda: [
+            SimpleNamespace(device='/dev/cu.usbmodem2101', description='USB JTAG/serial debug unit', vid=0x303a, pid=0x1001),
+            SimpleNamespace(device='/dev/cu.Bluetooth', description='Bluetooth', vid=None, pid=None)])
+        output = io.StringIO()
+        modules = {'serial': SimpleNamespace(), 'serial.tools': SimpleNamespace(list_ports=enumeration)}
+        with patch.dict(sys.modules, modules), patch.object(flash, 'flash') as write, \
+             patch.object(flash.subprocess, 'run') as command, contextlib.redirect_stdout(output):
+            self.assertEqual(flash.main(['--list-ports']), 0)
+        write.assert_not_called()
+        command.assert_not_called()
+        self.assertEqual(output.getvalue().splitlines(), [
+            '/dev/cu.Bluetooth: Bluetooth',
+            '/dev/cu.usbmodem2101: USB JTAG/serial debug unit [USB 303a:1001]'])
+
+    def test_no_ports_has_an_actionable_message(self):
+        output = io.StringIO()
+        enumeration = SimpleNamespace(comports=lambda: [])
+        with patch.dict(sys.modules, {'serial': SimpleNamespace(), 'serial.tools': SimpleNamespace(list_ports=enumeration)}), \
+             contextlib.redirect_stdout(output):
+            self.assertEqual(flash.main(['--list-ports']), 0)
+        self.assertIn('USB data cable', output.getvalue())
+
+    def test_missing_serial_support_is_reported(self):
+        with patch.dict(sys.modules, {'serial': None}), contextlib.redirect_stderr(io.StringIO()) as error:
+            self.assertEqual(flash.main(['--list-ports']), 1)
+        self.assertIn('Activate ESP-IDF', error.getvalue())
+
+    def test_incomplete_or_mixed_arguments_never_flash(self):
+        with patch.object(flash, 'flash') as write, contextlib.redirect_stderr(io.StringIO()):
+            for args in ([], ['test-port'], ['--list-ports', 'test-port', 'test.bin']):
+                with self.subTest(args=args), self.assertRaises(SystemExit) as error:
+                    flash.main(args)
+                self.assertEqual(error.exception.code, 2)
+        write.assert_not_called()
