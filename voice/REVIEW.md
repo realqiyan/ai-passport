@@ -22,6 +22,18 @@ Host tests：PASS。桥接 59 项中 57 项通过、2 项因 Linux 缺少 macOS 
 
 Device tests：NOT RUN。当前环境未发现串口设备。Unverified：Mac 本地网络权限、真实路由器广播、设备断线重连与 DHCP 地址变化。需同时更新 Mac 桥接与固件；使用旧固件时可手动指定 IP。操作见[Wi-Fi 使用](README.md#wi-fi-使用)。
 
+## 命令安装入口（pipx）
+
+2026-10-06：Mac 侧此前只有 `install.sh` 建的虚拟环境和 `start.sh <模式>`。按用户要求改为托管命令安装：桥接包 `passport-voice-bridge` 新增 `usb` 与 `wifi` 两个子命令，可用 `pipx install -e <voice>/bridge` 装到 pipx 的 bin 目录（本机为 `~/.local/bin`）。命令名保持 `passport-voice`，不新增别名。
+
+`usb` 省略串口时取唯一的 `/dev/cu.usbmodem*`，零个或多个都停止并说明原因；`wifi` 给出地址时写入 `voice/.local/host` 并直连，省略时走自动发现。两者都先检查聚合设备是否存在，缺失只告警、不阻止启动。参数准备完成后用 `os.execv` 替换自身进程，实际运行的是 `passport-voice run …`，因此 `uninstall.sh` 仍按绝对 CLI 路径识别进程，只是模式同时覆盖项目虚拟环境和 pipx 两条路径。
+
+`start.sh` 改为只转发参数的薄包装。`uninstall.sh` 增加 pipx 检测，确认后执行 `pipx uninstall passport-voice-bridge`；音频设备查询和聚合设备删除改用当前存在的那个环境。脚本沙箱为 `uninstall.sh` 提供 pipx 桩，避免测试触到真实安装。
+
+Host tests：PASS。桥接 70 项、脚本与刷机固定数据测试 26 项在本机 macOS 全部通过。新增 8 项桥接测试覆盖串口选择、地址与选项分离、`host` 记忆和未知子命令；脚本测试覆盖参数原样转发、未安装桥接时的提示，以及 pipx 卸载的存在与缺失两种分支。
+
+Device tests：NOT RUN。`pipx install -e` 已实测完成：`~/.local/bin/passport-voice` 指向 pipx 虚拟环境，帮助里出现 `usb` 与 `wifi`，无设备时 `usb` 给出预期提示并退出 1，给出串口时经 `exec` 进入 `run`。可编辑安装下默认路径仍解析到本项目的 `voice/.local/token` 与 `voice/.local/host`，未生成第二份状态目录。pipx 虚拟环境的 `bin/python` 解析到 Homebrew Python 3.14（`/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/bin/python3.14`），辅助功能授权需覆盖该解释器或运行它的终端；用 pipx 命令跑通一次完整出字尚未执行。
+
 ## 临时输入与安装入口更新（此前记录）
 
 用户已确认：关麦时按确认临时开麦，完成输入后再次按确认结束并关麦。不使用静音判断。上键继续负责持续开麦。临时开麦在采集就绪后才投递快捷键；3 秒内无法就绪、链路断开或注入失败时关闭麦克风。

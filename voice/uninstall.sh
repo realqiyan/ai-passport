@@ -11,6 +11,20 @@ venv="$bridge/.venv"
 voice="$venv/bin/passport-voice"
 state="$here/.local"
 
+# The command can also be installed with pipx, which keeps its own environment.
+pipx_package="passport-voice-bridge"
+pipx_venv=""
+if command -v pipx >/dev/null 2>&1; then
+    pipx_venvs="$(pipx environment --value PIPX_LOCAL_VENVS 2>/dev/null || true)"
+    [ -n "$pipx_venvs" ] && pipx_venv="$pipx_venvs/$pipx_package"
+fi
+pipx_voice="$pipx_venv/bin/passport-voice"
+# Use whichever installation is present.
+runnable="$voice"
+[ -x "$runnable" ] || runnable="$pipx_voice"
+runnable_python="$venv/bin/python"
+[ -x "$runnable_python" ] || runnable_python="$pipx_venv/bin/python"
+
 step() { printf '\n== %s\n' "$1"; }
 note() { printf '   %s\n' "$1"; }
 die() { printf '\nuninstall.sh: %s\n' "$1" >&2; exit 1; }
@@ -24,11 +38,16 @@ if [ $# -gt 0 ]; then
     assume_yes=1
 fi
 
-# Match this installation's absolute CLI path. Escape regex characters in paths.
-pattern="$(printf '%s' "$voice" | sed 's/[][\\.^$*+?(){}|]/\\&/g') run([[:space:]]|$)"
+# Match this installation's absolute CLI path, from the project venv or pipx.
+# Escape regex characters in paths.
+escape() { printf '%s' "$1" | sed 's/[][\\.^$*+?(){}|]/\\&/g'; }
+pattern="$(escape "$voice") run([[:space:]]|$)"
+if [ -n "$pipx_venv" ]; then
+    pattern="($(escape "$voice")|$(escape "$pipx_voice")) run([[:space:]]|$)"
+fi
 step "检查"
-if [ -x "$voice" ]; then
-    report="$("$voice" microphone)" || die "无法读取音频设备状态，已停止卸载。"
+if [ -x "$runnable" ]; then
+    report="$("$runnable" microphone)" || die "无法读取音频设备状态，已停止卸载。"
     if [ "$(printf '%s\n' "$report" | sed -n 's/^Default input: //p')" = "Passport Mic" ] &&
         ! pgrep -f "$pattern" >/dev/null 2>&1; then
         die "系统默认输入仍是 Passport Mic。先选择其他输入设备，再运行本脚本。"
@@ -46,6 +65,7 @@ cat <<TXT
    删除聚合音频设备 Passport Mic
    删除 Wi-Fi 令牌与本地状态 $state
    删除虚拟环境 $venv
+   卸载 pipx 安装的命令（如果存在）
 TXT
 
 if [ "$assume_yes" -eq 0 ]; then
@@ -74,12 +94,12 @@ if pgrep -f '[p]assport-voice run([[:space:]]|$)' >/dev/null 2>&1; then
     die "另一个目录的桥接仍在运行。请先停止它，再卸载共享聚合设备。"
 fi
 step "删除聚合音频设备"
-if [ ! -x "$voice" ]; then
-    note "虚拟环境不存在，跳过。删除聚合设备请用“音频 MIDI 设置”。"
+if [ ! -x "$runnable" ]; then
+    note "找不到已安装的命令，跳过。删除聚合设备请用“音频 MIDI 设置”。"
 else
-    report="$("$voice" microphone)" || die "无法读取音频设备状态，保留本地文件。"
+    report="$("$runnable" microphone)" || die "无法读取音频设备状态，保留本地文件。"
     if printf '%s\n' "$report" | grep -q '^Passport Mic: present'; then
-        "$venv/bin/python" - <<'PY'
+        "$runnable_python" - <<'PY'
 from voice_bridge.hostaudio import CoreAudio
 from voice_bridge.microphone import AggregateHal, remove
 remove(CoreAudio(), AggregateHal())
@@ -98,6 +118,15 @@ for file in "$state/token" "$state/host"; do
     fi
 done
 rmdir "$state" 2>/dev/null || true
+
+step "卸载 pipx 安装的命令"
+if command -v pipx >/dev/null 2>&1 &&
+    pipx list --short 2>/dev/null | grep -q "^$pipx_package "; then
+    pipx uninstall "$pipx_package"
+    note "已卸载 pipx 包 $pipx_package"
+else
+    note "未发现 pipx 安装，跳过"
+fi
 
 step "删除虚拟环境与构建残留"
 if [ -d "$venv" ]; then

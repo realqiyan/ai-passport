@@ -10,6 +10,8 @@
 
 2026-10-06 含 Wi-Fi 自动发现的固件重建并写入设备。完整门禁通过（0 失败）；应用镜像 1,213,136 字节，本机 SHA-256 `c0bca8b522b11534110e7cae1d6902e0c2296bcb023e810f2e0749b6b27fa2d0`，ELF SHA-256 `3512193b…`，归档 `voice-source/build/firmware/306f0ccd253bb3ea7f6f63effbf2bd72fc16edd162fb92de776ce36b444b09ea/`，`archive_firmware.py verify` 通过。本机镜像与另一台构建的镜像大小相同、哈希不同。刷写只写 `0x10000` 应用分区，回读校验一致；启动日志显示从该分区加载，未见 panic 或重启。自动发现的实机效果尚未验收。
 
+2026-10-06 Mac 侧新增 `passport-voice usb|wifi` 两个启动入口，可用 pipx 把命令装到 `~/.local/bin`；`start.sh` 改为只转发参数的薄包装，`uninstall.sh` 增加 pipx 卸载与两种命令路径的进程匹配。两个入口都用 `exec` 转入 `run`，进程形态不变。本机桥接测试 70 项、脚本测试 26 项全部通过；命令安装链路已实测启动到参数构造阶段，未做整轮实机语音验收。
+
 当前版本是独立应用，固件启动进入语音页面。设备重启后麦克风关闭，音频传输默认为 USB。
 
 ## 快速开始
@@ -17,6 +19,9 @@
 ```bash
 # 一次性安装（可重复运行）
 projects/ai-passport/voice/install.sh
+
+# 可选：把命令装到 ~/.local/bin，之后在任何目录直接运行
+pipx install -e projects/ai-passport/voice/bridge
 
 # 首次安装或升级设备固件：先构建，命令见“固件安装”
 # 激活 ESP-IDF 后，先列出串口，再只写应用分区
@@ -27,30 +32,57 @@ projects/ai-passport/voice/flash.sh <串口> <归档目录>/FoloToy-AI-Passport.
 projects/ai-passport/voice/configure.sh <串口> --shortcut ctrl+shift+v
 
 # 每次使用，二选一
-projects/ai-passport/voice/start.sh usb       # 有线
-projects/ai-passport/voice/start.sh wifi      # 无线，自动查找局域网设备
+passport-voice usb       # 有线，串口省略时用唯一的 /dev/cu.usbmodem*
+passport-voice wifi      # 无线，自动查找局域网设备
 ```
 
 安装脚本会建虚拟环境、装桥接程序、检查 BlackHole 2ch，并在缺失时创建聚合设备 `Passport Mic`。它不安装任何系统软件包，缺少 BlackHole 时会给出命令并停止。
 
 安装完成后有**两项只能由人完成**的设置：
 
-1. **辅助功能权限。** 系统设置 → 隐私与安全性 → 辅助功能，允许运行桥接的终端应用，或直接允许 `voice/bridge/.venv/bin/python`。**授权后必须重启桥接程序**，macOS 在进程启动时固定这个授权。
+1. **辅助功能权限。** 系统设置 → 隐私与安全性 → 辅助功能，允许运行桥接的终端应用，或直接允许桥接使用的 Python 解释器（路径见[辅助功能权限](#辅助功能权限)）。**授权后必须重启桥接程序**，macOS 在进程启动时固定这个授权。
 2. **在输入法里把麦克风选为 `Passport Mic`。** 详见[输入设备](#输入设备聚合设备与自动切换)。
+
+### 安装为命令（可选）
+
+`install.sh` 只建项目内的虚拟环境，命令入口是 `bridge/.venv/bin/passport-voice`。要在任何目录下直接运行，用 [pipx](https://pipx.pypa.io) 把它装成托管命令：
+
+```bash
+pipx install -e projects/ai-passport/voice/bridge   # 可重复运行；-e 让源码改动立即生效
+pipx uninstall passport-voice-bridge                # 卸载
+```
+
+- 命令名为 `passport-voice`，落在 pipx 的 bin 目录（本机为 `~/.local/bin`，需在 `PATH` 中）。`pipx list` 可查看状态。
+- `-e` 是可编辑安装，改 `bridge/voice_bridge/` 下的代码后无需重装。桥接默认路径按包位置解析，仍指向本项目的 `voice/.local/`。
+- pipx 环境独立于项目虚拟环境，两者可以并存。`install.sh` 仍负责检查 BlackHole 与创建聚合设备；`uninstall.sh` 会顺带执行 `pipx uninstall`。
+- 经 pipx 运行时，桥接的解释器是本机 Python，不是 `bridge/.venv/bin/python`。辅助功能授权按实际解释器路径给，见下文。
+- 不装 pipx 也可以：`start.sh usb|wifi` 直接调用项目虚拟环境里的同一条命令。
+
+### 启动命令
+
+| 命令 | 说明 |
+| --- | --- |
+| `passport-voice usb [串口]` | 有线链路。串口省略时使用唯一的 `/dev/cu.usbmodem*`；多个串口时停止并列出 |
+| `passport-voice wifi [IP]` | 无线链路。IP 省略时自动发现设备；发现超时后尝试 `voice/.local/host` 中的上次地址 |
+| `passport-voice run …` | 底层入口，参数见 `--help`；`usb` 与 `wifi` 最终都转入它 |
+
+`usb` 与 `wifi` 只准备参数，准备完成后用 `exec` 替换自身进程，因此实际运行的进程是 `passport-voice run …`，`pgrep -f 'passport-voice run'` 能匹配到。给出 IP 时 `wifi` 会把它记到 `voice/.local/host`，下次不带 IP 时先尝试该地址。
+
+`usb` 会在打开串口前提示设备会复位一次，并在聚合设备缺失时告警（不阻止启动）。
 
 ### 脚本用法
 
 | 命令 | 说明 |
 | --- | --- |
 | `install.sh` | 安装或更新 Mac 侧。只写自己目录内的文件和聚合设备 |
-| `start.sh usb [串口]` | 有线链路。串口省略时使用唯一的 `/dev/cu.usbmodem*` |
-| `start.sh wifi [IP]` | 无线链路。IP 省略时自动发现设备；发现超时后尝试 `voice/.local/host` 中的上次地址 |
+| `start.sh usb [串口]` | `passport-voice usb` 的薄包装，见[启动命令](#启动命令) |
+| `start.sh wifi [IP]` | `passport-voice wifi` 的薄包装，见[启动命令](#启动命令) |
 | `configure.sh [串口] --shortcut <组合键>` | 保存设备快捷键；可同时设置 Wi-Fi |
 | `flash.sh --list-ports` | 列出串口、设备描述及 USB 标识；不打开串口 |
 | `flash.sh <串口> <应用镜像>` | 检查设备分区，只刷应用并回读校验 |
-| `uninstall.sh` | 卸载 Mac 侧，即 `install.sh` 的逆操作 |
+| `uninstall.sh` | 卸载 Mac 侧，即 `install.sh` 的逆操作；发现 pipx 安装时一并卸载 |
 
-只有 `start.sh` 把额外参数原样转给 `passport-voice run`，例如 `start.sh usb --output 'BlackHole 2ch'`。`start.sh` 在前台运行，用 `Ctrl+C` 停止；退出时会还原系统默认输入设备。
+`start.sh` 不解析参数，它执行项目虚拟环境里的 `passport-voice`，参数原样转交，例如 `start.sh usb --output 'BlackHole 2ch'`。桥接在前台运行，用 `Ctrl+C` 停止；退出时会还原系统默认输入设备。
 
 脚本按自身所在目录解析路径，可以在任何工作目录下调用。
 
@@ -61,9 +93,9 @@ projects/ai-passport/voice/uninstall.sh          # 先列出要做什么，回�
 projects/ai-passport/voice/uninstall.sh --yes    # 跳过确认
 ```
 
-它会停止桥接、删除聚合设备 `Passport Mic`、删除 Wi-Fi 令牌与 `.local`、删除虚拟环境和构建残留。
+它会停止桥接、删除聚合设备 `Passport Mic`、删除 Wi-Fi 令牌与 `.local`、删除虚拟环境和构建残留；发现 pipx 安装时执行 `pipx uninstall passport-voice-bridge`。
 
-脚本只停止本目录安装的桥接。桥接退出后重新检查默认输入；仍为 `Passport Mic` 时拒绝删除。其他目录的桥接仍在运行时也拒绝删除共享聚合设备。音频状态读取失败时停止卸载。
+脚本只停止本目录安装的桥接，进程匹配同时覆盖项目虚拟环境和 pipx 两种命令路径。桥接退出后重新检查默认输入；仍为 `Passport Mic` 时拒绝删除。其他目录的桥接仍在运行时也拒绝删除共享聚合设备。音频状态读取失败时停止卸载。
 
 以下项目不会被改动，脚本会给出提示：
 
@@ -92,16 +124,16 @@ projects/ai-passport/voice/uninstall.sh --yes    # 跳过确认
 1. 复制源码目录，排除 `bridge/.venv`、`*.egg-info` 和 `__pycache__`。虚拟环境含机器路径和本机依赖，必须在目标 Mac 重建。
 2. 安装 Python 3.10 或更新版本。可用 Python 官方的 [universal2 安装包](https://www.python.org/downloads/macos/)。需要指定解释器时运行 `PYTHON=/路径/python3 ./install.sh`。
 3. 安装 BlackHole 2ch：`brew install --cask blackhole-2ch`。没有 Homebrew 时先安装它，或使用 BlackHole 官方安装包。确认系统已经加载驱动，再运行 `./install.sh`。
-4. 在目标 Mac 重新授权辅助功能，并把输入法麦克风设为 `Passport Mic`。权限不会随源码迁移。
+4. 在目标 Mac 重新授权辅助功能，并把输入法麦克风设为 `Passport Mic`。权限不会随源码迁移；授权对象是目标机器上的解释器路径，经 pipx 安装时需先在新机器执行一次 `pipx install -e <voice>/bridge`，再按它的解释器授权。
 5. USB 串口自动枚举。Wi-Fi 地址要按新网络重新指定。继续连接同一设备时，可安全转移 `.local/token` 并保留 `0600` 权限；否则经 USB 重新运行 `configure`。
 
-卸载只删除本目录的环境和本地状态，以及 UID 为 `com.ai-passport.aggregate.mic` 的聚合设备。BlackHole、系统权限和设备 NVS 需要分别处理。通过 `python -m voice_bridge.cli run` 自行启动的进程需先手动停止；脚本按绝对 CLI 路径识别它启动的桥接。
+卸载只删除本目录的环境和本地状态，以及 UID 为 `com.ai-passport.aggregate.mic` 的聚合设备。BlackHole、系统权限和设备 NVS 需要分别处理。用 `passport-voice usb|wifi|run` 或 `start.sh` 启动的进程会被脚本按绝对 CLI 路径识别；用 `python -m voice_bridge.cli run` 自行启动的进程需先手动停止。
 
 审查依据、修复和验证边界见 [稳定性与迁移审查](REVIEW.md)。
 
 ## 每次使用的流程
 
-1. 启动桥接：`start.sh usb` 或 `start.sh wifi`。等它打印 `Audio output ready`。
+1. 启动桥接：`passport-voice usb` 或 `passport-voice wifi`（等价于 `start.sh usb|wifi`）。等它打印 `Audio output ready`。
 2. 把光标放进要输入文字的输入框。
 3. 麦克风关闭时按**确定**，设备临时开麦。音频采集就绪后，桥接选择 `Passport Mic` 并发送输入快捷键。
 4. 说话。输入完成后再次按**确定**，桥接发送同一个快捷键结束输入，设备关闭麦克风，Mac 还原默认输入。
@@ -161,8 +193,16 @@ projects/ai-passport/voice/start.sh wifi <IP> --shortcut ctrl+alt+space
 桥接程序用 `CGEventPost` 把按键注入当前前台应用，因此必须获得 macOS 辅助功能授权，否则注入被系统静默丢弃：
 
 1. 打开“系统设置 → 隐私与安全性 → 辅助功能”。
-2. 允许运行桥接的终端应用，或直接允许 `voice/bridge/.venv/bin/python`。
+2. 允许运行桥接的终端应用，或直接允许桥接使用的 Python 解释器。
 3. **重启桥接程序。** macOS 在进程启动时固定这个授权，运行中的进程不会取得新授予的权限。
+
+解释器路径取决于安装方式。项目虚拟环境为 `voice/bridge/.venv/bin/python`；经 pipx 安装时是 pipx 虚拟环境里的 `bin/python`：
+
+```bash
+"$(pipx environment --value PIPX_LOCAL_VENVS)/passport-voice-bridge/bin/python" -c 'import sys; print(sys.executable)'
+```
+
+该路径是指向本机 Python 的符号链接，本机解析为 `/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/bin/python3.14`。两种方式同时使用时，授权要么给终端应用，要么分别给两个解释器。桥接未获授权时打印的提示包含它实际使用的解释器路径，可直接对照。
 
 未授权时桥接程序在启动和每次按键请求时打印提示。设备屏幕显示 `Shortcut sent` 只代表请求已发出，这种情况以桥接程序的输出为准。
 
@@ -197,9 +237,10 @@ Chatterfly 跟随**系统默认输入设备**，不保存自己选中的设备�
 先在 USB 模式配置网络。程序交互式读取密码，终端不显示密码：
 
 ```bash
-projects/ai-passport/voice/bridge/.venv/bin/passport-voice configure \
-    --serial <串口> --wifi-ssid <网络名>
+projects/ai-passport/voice/configure.sh <串口> --wifi-ssid <网络名>
 ```
+
+只在 pipx 环境中装过命令时，等价写法是 `passport-voice configure --serial <串口> --wifi-ssid <网络名>`。
 
 `--shortcut` 可以省略，此时设备保留当前快捷键；只有显式给出才会改写。配置 Wi-Fi 前必须**先停掉 USB 桥接**，串口不能被两个进程同时占用。SSID 须为 1–32 字节，密码须为 8–63 字节或 64 位十六进制 PSK。
 
@@ -267,7 +308,9 @@ Mac 程序连接设备的 TCP `8765` 端口，网络必须允许同一局域网�
 
 | 路径 | 用途 |
 | --- | --- |
-| `install.sh`、`start.sh`、`configure.sh`、`uninstall.sh` | Mac 侧安装、启动、配置与卸载入口 |
+| `install.sh`、`configure.sh`、`uninstall.sh` | Mac 侧安装、配置与卸载入口 |
+| `start.sh` | 启动命令的薄包装，转发参数到项目虚拟环境的 `passport-voice` |
+| `bridge/pyproject.toml` | 桥接包 `passport-voice-bridge`，提供 `passport-voice` 命令，可用 pipx 安装 |
 | `flash.sh`、`flash_firmware.py` | 设备应用分区检查、刷写和校验 |
 | `firmware/main/main.c` | 独立语音页面、按键和状态显示 |
 | `firmware/main/voice_runtime.c` | 分块录音、USB/Wi-Fi、配置保存、心跳和快捷键请求 |

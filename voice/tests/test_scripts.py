@@ -25,6 +25,13 @@ class ScriptTests(unittest.TestCase):
         self.executable(self.bin / 'uname', 'printf "Darwin\\n"')
         self.executable(self.bin / 'pgrep', '''printf 'pgrep %s\n' "$*" >>"$CALL_LOG"
 exit 1''')
+        self.executable(self.bin / 'pipx', '''printf 'pipx %s\n' "$*" >>"$CALL_LOG"
+if [ "$1" = environment ]; then
+    printf '%s\n' "${PIPX_VENVS:-}"
+fi
+if [ "$1" = list ] && [ "${PIPX_PACKAGE:-0}" = 1 ]; then
+    printf 'passport-voice-bridge 0.1.0\n'
+fi''')
         self.voice = self.root / 'bridge/.venv/bin/passport-voice'
         self.executable(self.voice, '''if [ "$1" = microphone ]; then
     [ "${MIC_FAIL:-0}" = 0 ] || exit 1
@@ -47,32 +54,17 @@ printf 'remove\\n' >>"$CALL_LOG"''')
                               input=text, text=True, capture_output=True, timeout=15,
                               cwd=self.temp.name)
 
-    def test_usb_preserves_port_and_option_spaces(self):
+    def test_start_forwards_arguments_verbatim(self):
         result = self.run_script('start.sh', 'usb', '/dev/cu.test port', '--output', 'BlackHole 2ch')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.log.read_text().splitlines(),
-                         ['run', '--serial', '/dev/cu.test port', '--output', 'BlackHole 2ch'])
+                         ['usb', '/dev/cu.test port', '--output', 'BlackHole 2ch'])
 
-    def test_wifi_remembers_host_and_preserves_options(self):
-        result = self.run_script('start.sh', 'wifi', '192.0.2.1', '--mic-device', '')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual((self.root / '.local/host').read_text(), '192.0.2.1\n')
-        self.log.unlink()
-        result = self.run_script('start.sh', 'wifi')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.log.read_text().splitlines(),
-                         ['run', '--discover', '--host-file', str(self.root / '.local/host')])
-
-    def test_wifi_without_saved_host_discovers_and_preserves_options(self):
-        result = self.run_script('start.sh', 'wifi', '--shortcut', 'ctrl+shift+v')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.log.read_text().splitlines(),
-                         ['run', '--discover', '--host-file', str(self.root / '.local/host'),
-                          '--shortcut', 'ctrl+shift+v'])
-        self.assertFalse((self.root / '.local/host').exists())
-
-    def test_unknown_mode_fails(self):
-        self.assertEqual(self.run_script('start.sh', 'invalid').returncode, 2)
+    def test_start_fails_without_installed_bridge(self):
+        self.voice.unlink()
+        result = self.run_script('start.sh', 'usb')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('install.sh', result.stderr)
 
     def test_uninstall_cancels_without_removing_files(self):
         self.assertEqual(self.run_script('uninstall.sh', text='no\n').returncode, 0)
@@ -82,6 +74,16 @@ printf 'remove\\n' >>"$CALL_LOG"''')
     def test_uninstall_rejects_extra_arguments(self):
         self.assertNotEqual(self.run_script('uninstall.sh', '--yes', 'extra').returncode, 0)
         self.assertTrue(self.voice.exists())
+
+    def test_uninstall_leaves_a_missing_pipx_package_alone(self):
+        self.assertEqual(self.run_script('uninstall.sh', '--yes').returncode, 0)
+        self.assertNotIn('pipx uninstall passport-voice-bridge', self.log.read_text())
+
+    def test_uninstall_removes_the_pipx_package(self):
+        self.env['PIPX_PACKAGE'] = '1'
+        self.env['PIPX_VENVS'] = str(self.root / 'pipx-venvs')
+        self.assertEqual(self.run_script('uninstall.sh', '--yes').returncode, 0)
+        self.assertIn('pipx uninstall passport-voice-bridge', self.log.read_text())
 
     def test_uninstall_fails_closed_when_audio_query_fails(self):
         self.env['MIC_FAIL'] = '1'

@@ -2,6 +2,7 @@
 import argparse
 import contextlib
 import getpass
+import glob
 import json
 import os
 from pathlib import Path
@@ -276,6 +277,68 @@ def _run(args):
             sink.buffer.clear()
             sink.close()
 
+def split_address(arguments):
+    """Split the optional device address from the options passed to run."""
+    if arguments and not arguments[0].startswith("-"):
+        return arguments[0], list(arguments[1:])
+    return None, list(arguments)
+
+def serial_port(explicit):
+    """Return the USB serial port, or explain how to choose one."""
+    if explicit:
+        return explicit
+    found = sorted(glob.glob("/dev/cu.usbmodem*"))
+    if not found:
+        raise SystemExit("没有找到 /dev/cu.usbmodem* 串口。插好数据线，或直接给出串口路径。")
+    if len(found) > 1:
+        raise SystemExit("找到多个串口，请指定一个：" + " ".join(found))
+    return found[0]
+
+def remembered_host():
+    """Path of the Wi-Fi address remembered between runs."""
+    return DEFAULT_TOKEN.with_name("host")
+
+def warn_missing_microphone():
+    """Warn when the aggregate input device is missing. Never fail the start."""
+    try:
+        report = microphone.describe(CoreAudio())
+    except Exception as exc:
+        print(f"警告：无法读取音频设备状态（{exc}）。", file=sys.stderr)
+        return
+    if not any(line.startswith(f"{microphone.DEFAULT_NAME}: present") for line in report):
+        print(f"警告：找不到 {microphone.DEFAULT_NAME} 聚合设备，输入法收不到声音。"
+              f"修复：passport-voice microphone --create", file=sys.stderr)
+
+def launch(options):
+    """Replace this process with run, so the process keeps its canonical form."""
+    script = Path(sys.argv[0]).resolve()
+    os.execv(sys.executable, [sys.executable, str(script), "run", *options])
+    raise SystemExit("无法启动桥接。")
+
+def usb(args):
+    """Start the USB link."""
+    address, options = split_address(args.arguments)
+    port = serial_port(address)
+    warn_missing_microphone()
+    print(f"USB 链路：{port}", file=sys.stderr)
+    print("打开串口会让设备复位一次，屏幕闪一下属正常现象。", file=sys.stderr)
+    launch(["--serial", port, *options])
+
+def wifi(args):
+    """Start the Wi-Fi link."""
+    address, options = split_address(args.arguments)
+    warn_missing_microphone()
+    path = remembered_host()
+    if address:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"{address}\n")
+        print(f"Wi-Fi 链路：{address}", file=sys.stderr)
+        options = ["--host", address, *options]
+    else:
+        print("正在查找局域网中的 Passport，请先在设备上选择 Wi-Fi 模式。", file=sys.stderr)
+        options = ["--discover", "--host-file", str(path), *options]
+    launch(options)
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -307,6 +370,12 @@ def main(argv=None):
     bridge.add_argument("--mic-device", default="Passport Mic",
         help="Input device to select while the microphone records; an empty value keeps the current default")
     bridge.add_argument("--token-file", type=Path, default=DEFAULT_TOKEN)
+    for name, help_text in (
+            ("usb", "Start the USB link; the serial port can be omitted"),
+            ("wifi", "Start the Wi-Fi link; the device address can be omitted")):
+        link = commands.add_parser(name, help=help_text)
+        link.add_argument("arguments", nargs=argparse.REMAINDER,
+            help="Optional device address, then the options accepted by run")
     args = parser.parse_args(argv)
     try:
         if args.command == "devices":
@@ -333,6 +402,10 @@ def main(argv=None):
                 print(line)
         elif args.command == "configure":
             configure(args)
+        elif args.command == "usb":
+            usb(args)
+        elif args.command == "wifi":
+            wifi(args)
         else:
             run(args)
     except KeyboardInterrupt:
