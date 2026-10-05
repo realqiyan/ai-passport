@@ -34,6 +34,69 @@ Host tests：PASS。桥接 70 项、脚本与刷机固定数据测试 26 项在�
 
 Device tests：NOT RUN。`pipx install -e` 已实测完成：`~/.local/bin/passport-voice` 指向 pipx 虚拟环境，帮助里出现 `usb` 与 `wifi`，无设备时 `usb` 给出预期提示并退出 1，给出串口时经 `exec` 进入 `run`。可编辑安装下默认路径仍解析到本项目的 `voice/.local/token` 与 `voice/.local/host`，未生成第二份状态目录。pipx 虚拟环境的 `bin/python` 解析到 Homebrew Python 3.14（`/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/bin/python3.14`），辅助功能授权需覆盖该解释器或运行它的终端；用 pipx 命令跑通一次完整出字尚未执行。
 
+## pipx 迁移复查（2026-10-05）
+
+此节保留修复前的发现与建议。当前结果见[迁移修复](#pipx-迁移修复2026-10-05)。
+
+审查基线：`a02a358`。本轮在 Linux 审查入口、安装和卸载。仅更新审查文档，未修复运行代码，未执行真实安装或卸载。此前 macOS 的安装实测记录保留在上节。
+
+### 已复现的问题
+
+1. **P1：卸载未核验 pipx 包的源码归属。** `uninstall.sh` 第 17–19 行只按包名定位全局环境，第 45–46 行把其命令路径加入本目录进程匹配，第 123–125 行按包名卸载。若 pipx 安装指向目录 B，在目录 A 运行卸载仍会移除 B 的包；进程匹配也会把 B 当作本目录安装。沙箱在全局环境写入指向另一个源码目录的 `pipx_metadata.json` 后，卸载退出 0，并调用 `pipx uninstall passport-voice-bridge`。真实进程终止未执行；误停止的判断依据是构造的路径匹配规则。建议在停止进程或卸载之前，核验可编辑安装的实际源码路径与当前 `bridge` 路径一致。无法核验时保留该 pipx 安装。
+2. **P2：省略地址时无法传入桥接选项。** `voice_bridge/cli.py` 第 373–379 行用 `argparse.REMAINDER` 接收参数。直接调用 `main(['wifi', '--shortcut', 'ctrl+shift+v'])` 或 `main(['usb', '--output', 'BlackHole 2ch'])`，均报 `unrecognized arguments` 并退出 2。显式地址加选项可正常进入 `launch`。现有 `test_launch.py` 直接调用 `usb`、`wifi`，因此绕过了出错的解析入口。建议让三个运行入口共用选项定义，并通过 `main(argv)` 检查省略地址、显式地址、带空格选项及未知选项。
+3. **P2：模块启动方式在 usb/wifi 下失败。** `launch` 第 311–312 行把 `sys.argv[0]` 当脚本执行。经 `python -m voice_bridge.cli usb|wifi` 启动时，这个路径是包内 `cli.py`。子进程直接执行该文件，在 `from . import microphone` 处报 `ImportError: attempted relative import with no known parent package`。本轮捕获其 exec 参数，再在子进程执行，复现退出 1。此问题不影响当前控制台脚本入口。建议显式支持模块启动，或说明 usb/wifi 只支持控制台脚本；若改 exec 方式，需同步调整卸载的进程识别。
+
+### 改进建议（尚未实施）
+
+- **统一安装流程。** 当前是项目虚拟环境与 pipx 并存，`install.sh` 仍负责 BlackHole 检查和聚合设备创建；`start.sh`、`configure.sh` 仍只读取项目虚拟环境。因此只执行 pipx 安装不能完成现有快速开始流程。若目标是替代脚本，建议由 pipx 管理 Python 环境，并把系统检查、聚合设备准备和清理放入明确的应用子命令。旧脚本只保留参数转发。不要在包构建阶段创建系统设备。
+- **明确清理顺序。** 直接 `pipx uninstall passport-voice-bridge` 不等于原来的完整卸载，它只移除 pipx 环境及导出的入口。聚合设备、源码目录中的令牌和地址缓存仍需应用清理步骤。先停止桥接并清理，再卸载包。[pipx 1.8.0 卸载实现](https://github.com/pypa/pipx/blob/1.8.0/src/pipx/commands/uninstall.py)支持此结论。
+- **区分首次安装与更新。** README 的“可重复运行”不应被理解成更新依赖、入口元数据或切换源码目录。已存在的环境下，普通 `pipx install -e` 会保留原安装；源码文件修改可立即生效，元数据变化需要重装。参考 [pipx 1.8.0 安装实现](https://github.com/pypa/pipx/blob/1.8.0/src/pipx/commands/install.py)与 [pip 可编辑安装说明](https://pip.pypa.io/en/stable/topics/local-project-installs/)。
+- **明确状态目录契约。** `DEFAULT_TOKEN` 按包文件位置计算，目前依赖可编辑安装。普通安装会把默认状态放入 pipx 环境的 `lib/pythonX.Y/.local/`，不再使用源码树的 `voice/.local/`。若要支持普通安装，建议使用固定的用户数据目录，并提供旧令牌迁移；若仅支持 `-e`，应明确这个限制。
+
+### 验证与下一步
+
+现有桥接测试运行 70 项：68 项通过，2 项因缺 macOS 框架跳过。脚本与刷机固定数据测试 26 项全部通过。命令如下：
+
+```bash
+PYTHONPATH=projects/ai-passport/voice/bridge python3 -m unittest discover -s projects/ai-passport/voice/bridge/tests -v
+python3 -m unittest discover -s projects/ai-passport/voice/tests -v
+```
+
+额外复现使用 `unittest.mock` 与既有 `ScriptTests` 临时目录。没有修改系统音频、真实 pipx 环境或设备。当前环境没有 pipx；真实 pipx 生命周期、macOS 权限与完整语音输入仍待实机验证。
+
+下一步：先修复卸载归属和 CLI 参数解析，再确定是否完成 pipx 单环境迁移。补测应覆盖 `main(argv)`、只存在 pipx 环境、其他源码目录的 pipx 安装，以及清理失败时保留状态。
+
+## pipx 迁移修复（2026-10-05）
+
+用户已授权修改上述全部发现与建议。本轮完成代码、兼容脚本、回归测试和使用说明；没有提交、推送或操作用户的 Mac 安装。
+
+### 当前结果
+
+- `usb`、`wifi`、`run` 共用选项定义。省略地址、带空格选项及未知选项都通过 `main(argv)` 测试。两个快捷入口直接调用运行函数，移除了依赖 `sys.argv[0]` 的 exec，模块启动不再直接执行包文件。
+- `state.py` 负责用户状态目录和旧状态迁移。macOS 默认目录为 `~/Library/Application Support/passport-voice`。普通安装和可编辑安装共用这个目录，也可用 `PASSPORT_VOICE_STATE_DIR` 指定独立位置。令牌复制采用权限 `0600` 的临时文件，并发布完整文件，保留旧备份。令牌冲突或无效时停止；已有地址缓存优先，避免旧地址使重复 setup 失败。
+- `lifecycle.py` 负责 `setup` 和 `cleanup`。setup 检查已加载的 BlackHole、核验已有聚合设备 UID、迁移旧状态，并按需创建设备。cleanup 在确认后停止当前环境及指定旧目录的桥接，等待退出，重新读取音频状态，再删除聚合设备及已知状态文件。进程或音频查询失败、其他安装仍运行、停止超时或默认输入未还原时停止。未知文件与自定义令牌路径保留。
+- 清理覆盖控制台脚本的 `run`、`usb`、`wifi`、符号链接入口和模块启动。识别保留虚拟环境的解释器目录，避免将解释器符号链接解析到系统 Python 后混淆不同环境。普通命令参数中出现命令名称不会被当作桥接进程。
+- 兼容脚本改用 pipx。共享 `bridge-command.sh` 核验实际包源码路径。其他目录、普通安装或无法核验的 pipx 环境会使仓库脚本停止；普通安装直接使用应用命令。uninstall 仅在 cleanup 成功后卸载包，再移除当前目录的旧环境。只有旧项目环境时，也先核验其源码来源。
+- install 的首次安装与更新分开处理。已有同源环境使用 `--force` 刷新元数据和依赖；指定 `PYTHON` 时使用 `pipx reinstall --python`，避免 force 忽略解释器选择。脚本不再创建项目虚拟环境。
+- README 说明首次安装、更新、解释器切换、状态迁移和清理顺序。取消 cleanup 返回非零状态，`cleanup && pipx uninstall` 不会继续卸载。相关知识文档已标注旧状态路径和旧进程形态的适用边界。
+
+### 验证
+
+Linux 固定数据验证：桥接 95 项中 93 项通过，2 项因缺 macOS 框架跳过。脚本与刷机测试 26 项全部通过。新增检查覆盖其他源码目录、只存在 pipx、首次安装、重复更新、解释器切换、迁移冲突、缓存更新、取消清理、清理失败、停止超时及清理后再卸载。Shell 语法检查和 `git diff --check` 通过。
+
+隔离的真实安装验证：使用 pipx 1.8.0、Python 3.13.13，在包含空格的源码与环境目录中完成可编辑和普通安装。两种安装均可调用 `usb`、`wifi`、`setup`、`cleanup` 的帮助，模块入口可用；省略 USB 地址并传 `--output` 不再报解析错误，而是正常提示没有串口。两种安装使用同一指定用户状态路径。可编辑安装的 start 包装可转发参数。两种临时包均已通过 pipx 卸载。该验证使用 scratch 中的源码副本，不修改用户真实安装。
+
+验证命令：
+
+```bash
+PYTHONPATH=projects/ai-passport/voice/bridge python3 -m unittest discover -s projects/ai-passport/voice/bridge/tests -v
+python3 -m unittest discover -s projects/ai-passport/voice/tests -v
+bash -n projects/ai-passport/voice/{install,uninstall,start,configure,bridge-command}.sh
+git diff --check
+```
+
+实机边界：本轮没有执行 macOS 音频设备操作、辅助功能授权、真实串口连接或语音输入。下一步在 Mac 先停止旧桥接，安装或更新 pipx 包并执行 setup；核对令牌迁移、USB/Wi-Fi 出字、默认输入还原和完整卸载。固件未改动，未重复构建或刷写。
+
 ## 临时输入与安装入口更新（此前记录）
 
 用户已确认：关麦时按确认临时开麦，完成输入后再次按确认结束并关麦。不使用静音判断。上键继续负责持续开麦。临时开麦在采集就绪后才投递快捷键；3 秒内无法就绪、链路断开或注入失败时关闭麦克风。

@@ -75,7 +75,7 @@ def create(hal, aggregates, name=DEFAULT_NAME, uid=DEFAULT_UID, subdevice=SUBDEV
     return aggregates.create(description(name, uid, subdevice_uid))
 
 def remove(hal, aggregates, name=DEFAULT_NAME):
-    """Remove the aggregate device. Only uninstall.sh calls this.
+    """Remove the aggregate device after the bridge stops.
 
     The check below covers the system default input only. An input method can
     still be configured to use the device, so callers must ask the user first.

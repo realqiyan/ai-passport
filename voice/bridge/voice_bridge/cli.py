@@ -10,7 +10,7 @@ import secrets
 import signal
 import sys
 import time
-from . import microphone
+from . import lifecycle, microphone, state
 from .hostaudio import CoreAudio, InputSwitcher
 from .protocol import COMMAND, PCM, STATUS, Parser, encode
 from .shortcut import Injector, trusted
@@ -21,7 +21,7 @@ MODIFIERS = {"ctrl": 1, "shift": 2, "alt": 4, "cmd": 8}
 KEYS = {"space": 0x2c, "enter": 0x28, "escape": 0x29, "tab": 0x2b}
 KEYS.update({chr(ord("a") + i): 4 + i for i in range(26)})
 KEYS.update({f"f{i}": 0x39 + i for i in range(1, 13)})
-DEFAULT_TOKEN = Path(__file__).resolve().parents[2] / ".local" / "token"
+DEFAULT_TOKEN = state.directory() / "token"
 
 def shortcut(value):
     parts = value.lower().split("+")
@@ -78,7 +78,7 @@ def read_token(path):
     except FileNotFoundError:
         raise RuntimeError(
             f"Wi-Fi token is missing: {path}. Connect the device by USB, stop the USB bridge, "
-            "turn the microphone off, then run configure.sh <serial> --wifi-ssid <network>. "
+            "turn the microphone off, then run passport-voice configure --serial <serial> --wifi-ssid <network>. "
             "This creates and saves the token on both the Mac and the device. "
             "If you have the matching token elsewhere, use --token-file <path>."
         ) from None
@@ -114,7 +114,7 @@ def open_session(args):
     session = Session(link)
     try:
         session.request("hello", token=token)
-        if getattr(args, "discover", False):
+        if not args.serial and hasattr(args, "host_file"):
             args.host_file.parent.mkdir(parents=True, exist_ok=True)
             args.host_file.write_text(args.host + "\n")
         return session
@@ -277,12 +277,6 @@ def _run(args):
             sink.buffer.clear()
             sink.close()
 
-def split_address(arguments):
-    """Split the optional device address from the options passed to run."""
-    if arguments and not arguments[0].startswith("-"):
-        return arguments[0], list(arguments[1:])
-    return None, list(arguments)
-
 def serial_port(explicit):
     """Return the USB serial port, or explain how to choose one."""
     if explicit:
@@ -294,10 +288,6 @@ def serial_port(explicit):
         raise SystemExit("找到多个串口，请指定一个：" + " ".join(found))
     return found[0]
 
-def remembered_host():
-    """Path of the Wi-Fi address remembered between runs."""
-    return DEFAULT_TOKEN.with_name("host")
-
 def warn_missing_microphone():
     """Warn when the aggregate input device is missing. Never fail the start."""
     try:
@@ -307,37 +297,38 @@ def warn_missing_microphone():
         return
     if not any(line.startswith(f"{microphone.DEFAULT_NAME}: present") for line in report):
         print(f"警告：找不到 {microphone.DEFAULT_NAME} 聚合设备，输入法收不到声音。"
-              f"修复：passport-voice microphone --create", file=sys.stderr)
+              f"修复：passport-voice setup", file=sys.stderr)
 
-def launch(options):
-    """Replace this process with run, so the process keeps its canonical form."""
-    script = Path(sys.argv[0]).resolve()
-    os.execv(sys.executable, [sys.executable, str(script), "run", *options])
-    raise SystemExit("无法启动桥接。")
-
-def usb(args):
-    """Start the USB link."""
-    address, options = split_address(args.arguments)
-    port = serial_port(address)
+def launch(args):
+    """Run a normalized link in this process, including module entry points."""
     warn_missing_microphone()
-    print(f"USB 链路：{port}", file=sys.stderr)
-    print("打开串口会让设备复位一次，屏幕闪一下属正常现象。", file=sys.stderr)
-    launch(["--serial", port, *options])
-
-def wifi(args):
-    """Start the Wi-Fi link."""
-    address, options = split_address(args.arguments)
-    warn_missing_microphone()
-    path = remembered_host()
-    if address:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(f"{address}\n")
-        print(f"Wi-Fi 链路：{address}", file=sys.stderr)
-        options = ["--host", address, *options]
+    if args.command == "usb":
+        args.serial = serial_port(args.address)
+        args.host = None
+        args.discover = False
+        print(f"USB 链路：{args.serial}", file=sys.stderr)
+        print("打开串口会让设备复位一次，屏幕闪一下属正常现象。", file=sys.stderr)
     else:
-        print("正在查找局域网中的 Passport，请先在设备上选择 Wi-Fi 模式。", file=sys.stderr)
-        options = ["--discover", "--host-file", str(path), *options]
-    launch(options)
+        args.serial = None
+        args.host = args.address
+        args.discover = args.address is None
+        if args.host:
+            print(f"Wi-Fi 链路：{args.host}", file=sys.stderr)
+        else:
+            print("正在查找局域网中的 Passport，请先在设备上选择 Wi-Fi 模式。", file=sys.stderr)
+    return run(args)
+
+
+def run_options(parser):
+    """Use the same audio, shortcut and state options for every link."""
+    parser.add_argument("--host-file", type=Path, default=DEFAULT_TOKEN.with_name("host"),
+        help="Saved address to try when discovery times out")
+    parser.add_argument("--shortcut", type=shortcut,
+        help="Override the shortcut for this run; configure saves it on the device")
+    parser.add_argument("--output", default="BlackHole 2ch")
+    parser.add_argument("--mic-device", default="Passport Mic",
+        help="Input device to select while recording; an empty value keeps the current default")
+    parser.add_argument("--token-file", type=Path, default=DEFAULT_TOKEN)
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
@@ -362,20 +353,18 @@ def main(argv=None):
     transport.add_argument("--serial")
     transport.add_argument("--host")
     transport.add_argument("--discover", action="store_true", help="Find a device on the local network")
-    bridge.add_argument("--host-file", type=Path, default=DEFAULT_TOKEN.with_name("host"),
-        help="Saved address to try when discovery times out")
-    bridge.add_argument("--shortcut", type=shortcut,
-        help="Override the device shortcut for this run; configure saves a shortcut on the device")
-    bridge.add_argument("--output", default="BlackHole 2ch")
-    bridge.add_argument("--mic-device", default="Passport Mic",
-        help="Input device to select while the microphone records; an empty value keeps the current default")
-    bridge.add_argument("--token-file", type=Path, default=DEFAULT_TOKEN)
+    run_options(bridge)
     for name, help_text in (
-            ("usb", "Start the USB link; the serial port can be omitted"),
-            ("wifi", "Start the Wi-Fi link; the device address can be omitted")):
+            ("usb", "Start USB; omit the port when there is one device"),
+            ("wifi", "Start Wi-Fi; omit the address to discover a device")):
         link = commands.add_parser(name, help=help_text)
-        link.add_argument("arguments", nargs=argparse.REMAINDER,
-            help="Optional device address, then the options accepted by run")
+        link.add_argument("address", nargs="?", help="Serial port or Wi-Fi address")
+        run_options(link)
+    setup = commands.add_parser("setup", help="Check BlackHole, prepare the input and migrate legacy state")
+    setup.add_argument("--legacy-state-dir", type=Path, default=state.legacy_directory())
+    cleanup = commands.add_parser("cleanup", help="Stop this bridge and remove its input and saved state")
+    cleanup.add_argument("--yes", action="store_true", help="Skip the cleanup confirmation")
+    cleanup.add_argument("--legacy-state-dir", type=Path, default=state.legacy_directory())
     args = parser.parse_args(argv)
     try:
         if args.command == "devices":
@@ -402,10 +391,13 @@ def main(argv=None):
                 print(line)
         elif args.command == "configure":
             configure(args)
-        elif args.command == "usb":
-            usb(args)
-        elif args.command == "wifi":
-            wifi(args)
+        elif args.command == "setup":
+            lifecycle.setup(DEFAULT_TOKEN.parent, args.legacy_state_dir)
+        elif args.command == "cleanup":
+            if not lifecycle.cleanup(DEFAULT_TOKEN.parent, args.legacy_state_dir, yes=args.yes):
+                return 1
+        elif args.command in ("usb", "wifi"):
+            launch(args)
         else:
             run(args)
     except KeyboardInterrupt:

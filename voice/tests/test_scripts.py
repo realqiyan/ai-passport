@@ -1,4 +1,4 @@
-"""Exercise shell entry points without changing macOS audio or installed files."""
+"""Test pipx wrappers in a sandbox without installed packages or macOS audio."""
 import os
 from pathlib import Path
 import shutil
@@ -15,32 +15,30 @@ class ScriptTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name) / 'Other Mac [test] with spaces' / 'voice'
         self.root.mkdir(parents=True)
-        for name in ('install.sh', 'start.sh', 'uninstall.sh', 'configure.sh'):
+        for name in ('install.sh', 'start.sh', 'uninstall.sh', 'configure.sh', 'bridge-command.sh'):
             shutil.copy2(ROOT / name, self.root / name)
         self.bin = Path(self.temp.name) / 'bin'
         self.bin.mkdir()
         self.log = Path(self.temp.name) / 'calls'
+        self.venvs = Path(self.temp.name) / 'pipx envs'
+        self.voice = self.venvs / 'passport-voice-bridge/bin/passport-voice'
         self.env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ['PATH'],
-                        CALL_LOG=str(self.log), MIC_DEFAULT='Built-in', MIC_STATE='present')
+                        CALL_LOG=str(self.log), PIPX_VENVS=str(self.venvs),
+                        INSTALLED_SOURCE=str(self.root / 'bridge'))
         self.executable(self.bin / 'uname', 'printf "Darwin\\n"')
-        self.executable(self.bin / 'pgrep', '''printf 'pgrep %s\n' "$*" >>"$CALL_LOG"
-exit 1''')
         self.executable(self.bin / 'pipx', '''printf 'pipx %s\n' "$*" >>"$CALL_LOG"
-if [ "$1" = environment ]; then
-    printf '%s\n' "${PIPX_VENVS:-}"
-fi
-if [ "$1" = list ] && [ "${PIPX_PACKAGE:-0}" = 1 ]; then
-    printf 'passport-voice-bridge 0.1.0\n'
-fi''')
-        self.voice = self.root / 'bridge/.venv/bin/passport-voice'
-        self.executable(self.voice, '''if [ "$1" = microphone ]; then
-    [ "${MIC_FAIL:-0}" = 0 ] || exit 1
-    printf 'Passport Mic: %s\\nDefault input: %s\\n' "$MIC_STATE" "$MIC_DEFAULT"
-else
-    printf '%s\\n' "$@" >>"$CALL_LOG"
-fi''')
-        self.executable(self.voice.parent / 'python', '''cat >/dev/null
-printf 'remove\\n' >>"$CALL_LOG"''')
+case "$1" in
+environment) printf '%s\n' "$PIPX_VENVS" ;;
+install) [ "${INSTALL_FAIL:-0}" = 0 ] || exit 1 ;;
+uninstall) [ "${UNINSTALL_FAIL:-0}" = 0 ] || exit 1 ;;
+esac''')
+        self.executable(self.voice, '''printf '%s\n' "$@" >>"$CALL_LOG"
+if [ "$1" = cleanup ] && [ "${CLEANUP_FAIL:-0}" = 1 ]; then exit 1; fi''')
+        self.executable(self.voice.parent / 'python', '''[ "${SOURCE_FAIL:-0}" = 0 ] || exit 1
+printf '%s\n' "$INSTALLED_SOURCE"''')
+        self.legacy = self.root / 'bridge/.venv/bin/passport-voice'
+        self.executable(self.legacy, 'printf "legacy %s\\n" "$*" >>"$CALL_LOG"')
+        self.executable(self.legacy.parent / 'python', 'printf "%s\\n" "$INSTALLED_SOURCE"')
         (self.root / '.local').mkdir()
         (self.root / '.local/token').write_text('test')
 
@@ -54,122 +52,119 @@ printf 'remove\\n' >>"$CALL_LOG"''')
                               input=text, text=True, capture_output=True, timeout=15,
                               cwd=self.temp.name)
 
-    def test_start_forwards_arguments_verbatim(self):
+    def test_start_uses_pipx_without_a_project_environment(self):
+        shutil.rmtree(self.root / 'bridge/.venv')
         result = self.run_script('start.sh', 'usb', '/dev/cu.test port', '--output', 'BlackHole 2ch')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.log.read_text().splitlines(),
+        self.assertEqual(self.log.read_text().splitlines()[1:],
                          ['usb', '/dev/cu.test port', '--output', 'BlackHole 2ch'])
 
-    def test_start_fails_without_installed_bridge(self):
-        self.voice.unlink()
+    def test_start_reports_a_missing_pipx_installation(self):
+        shutil.rmtree(self.venvs)
         result = self.run_script('start.sh', 'usb')
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('install.sh', result.stderr)
 
-    def test_uninstall_cancels_without_removing_files(self):
+    def test_uninstall_cancels_before_cleanup(self):
         self.assertEqual(self.run_script('uninstall.sh', text='no\n').returncode, 0)
-        self.assertTrue(self.voice.exists())
+        self.assertTrue(self.legacy.exists())
+        self.assertNotIn('cleanup', self.log.read_text())
+
+    def test_invalid_arguments_do_not_touch_pipx(self):
+        for name, argv in [('uninstall.sh', ['--yes', 'extra']), ('uninstall.sh', ['--no']),
+                           ('install.sh', ['--output', 'test'])]:
+            self.assertNotEqual(self.run_script(name, *argv).returncode, 0)
+        self.assertFalse(self.log.exists())
+
+    def test_foreign_checkout_is_preserved_by_install_and_uninstall(self):
+        self.env['INSTALLED_SOURCE'] = str(Path(self.temp.name) / 'other checkout/bridge')
+        for name, argv in [('uninstall.sh', ['--yes']), ('install.sh', []), ('start.sh', ['wifi'])]:
+            result = self.run_script(name, *argv)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('与当前目录不同', result.stderr)
+        calls = self.log.read_text()
+        self.assertNotIn('cleanup', calls)
+        self.assertNotIn('pipx uninstall', calls)
+        self.assertNotIn('pipx install', calls)
+        self.assertTrue(self.legacy.exists())
         self.assertTrue((self.root / '.local/token').exists())
 
-    def test_uninstall_rejects_extra_arguments(self):
-        self.assertNotEqual(self.run_script('uninstall.sh', '--yes', 'extra').returncode, 0)
-        self.assertTrue(self.voice.exists())
+    def test_unverifiable_installation_stops_before_cleanup(self):
+        self.env['SOURCE_FAIL'] = '1'
+        result = self.run_script('uninstall.sh', '--yes')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn('cleanup', self.log.read_text())
 
-    def test_uninstall_leaves_a_missing_pipx_package_alone(self):
-        self.assertEqual(self.run_script('uninstall.sh', '--yes').returncode, 0)
-        self.assertNotIn('pipx uninstall passport-voice-bridge', self.log.read_text())
-
-    def test_uninstall_removes_the_pipx_package(self):
-        self.env['PIPX_PACKAGE'] = '1'
-        self.env['PIPX_VENVS'] = str(self.root / 'pipx-venvs')
-        self.assertEqual(self.run_script('uninstall.sh', '--yes').returncode, 0)
-        self.assertIn('pipx uninstall passport-voice-bridge', self.log.read_text())
-
-    def test_uninstall_fails_closed_when_audio_query_fails(self):
-        self.env['MIC_FAIL'] = '1'
-        self.assertNotEqual(self.run_script('uninstall.sh', '--yes').returncode, 0)
-        self.assertTrue(self.voice.exists())
-
-    def test_uninstall_rejects_default_input_without_owned_bridge(self):
-        self.env['MIC_DEFAULT'] = 'Passport Mic'
-        self.assertNotEqual(self.run_script('uninstall.sh', '--yes').returncode, 0)
-        self.assertTrue(self.voice.exists())
-
-    def test_uninstall_removes_only_local_files(self):
+    def test_uninstall_cleans_before_removing_environment(self):
         result = self.run_script('uninstall.sh', '--yes')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertFalse(self.voice.exists())
-        self.assertFalse((self.root / '.local/token').exists())
+        calls = self.log.read_text()
+        self.assertLess(calls.index('cleanup\n'), calls.index('pipx uninstall'))
+        self.assertIn(str(self.root / '.local'), calls)
+        self.assertFalse(self.legacy.exists())
         self.assertTrue((self.root / 'start.sh').exists())
-        self.assertIn('remove\n', self.log.read_text())
-        self.assertNotIn('command not found', result.stderr)
-        self.assertIn(r'Other Mac \[test\]', self.log.read_text())
 
-    def test_uninstall_leaves_other_bridge_process_running(self):
-        self.executable(self.bin / 'pgrep', '''printf 'pgrep %s\\n' "$*" >>"$CALL_LOG"
-case "$*" in *'[p]assport-voice'*) exit 0 ;; *) exit 1 ;; esac''')
-        result = self.run_script('uninstall.sh', '--yes')
-        self.assertNotEqual(result.returncode, 0)
-        self.assertTrue(self.voice.exists())
-        self.assertNotIn('remove\n', self.log.read_text())
-
-    def test_install_rejects_arguments(self):
-        self.assertNotEqual(self.run_script('install.sh', '--output', 'test').returncode, 0)
-
-    def test_uninstall_stops_owned_bridge_before_deleting_device(self):
-        marker = Path(self.temp.name) / 'running'
-        marker.touch()
-        self.env['RUNNING_MARKER'] = str(marker)
-        self.executable(self.bin / 'pgrep', '''case "$*" in
-*'[p]assport-voice'*) exit 1 ;;
-*) [ -e "$RUNNING_MARKER" ] ;;
-esac''')
-        self.executable(self.bin / 'pkill', '''printf 'stop %s\\n' "$*" >>"$CALL_LOG"
-rm "$RUNNING_MARKER"''')
-        result = self.run_script('uninstall.sh', '--yes')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertLess(self.log.read_text().index('stop '), self.log.read_text().index('remove\n'))
-        self.assertFalse(marker.exists())
-
-    def test_uninstall_checks_restore_after_stopping_bridge(self):
-        marker = Path(self.temp.name) / 'running'
-        marker.touch()
-        self.env.update(RUNNING_MARKER=str(marker), MIC_DEFAULT='Passport Mic')
-        self.executable(self.bin / 'pgrep', '''case "$*" in
-*'[p]assport-voice'*) exit 1 ;;
-*) [ -e "$RUNNING_MARKER" ] ;;
-esac''')
-        self.executable(self.bin / 'pkill', 'rm "$RUNNING_MARKER"')
-        # The native removal call fails if restoration did not succeed.
-        self.executable(self.voice.parent / 'python', 'cat >/dev/null; exit 1')
-        result = self.run_script('uninstall.sh', '--yes')
-        self.assertNotEqual(result.returncode, 0)
+    def test_cleanup_failure_preserves_both_environments_and_state(self):
+        self.env['CLEANUP_FAIL'] = '1'
+        self.assertNotEqual(self.run_script('uninstall.sh', '--yes').returncode, 0)
+        self.assertNotIn('pipx uninstall', self.log.read_text())
+        self.assertTrue(self.legacy.exists())
         self.assertTrue(self.voice.exists())
         self.assertTrue((self.root / '.local/token').exists())
 
-    def test_install_repeats_in_path_with_spaces_and_custom_python(self):
-        driver = self.root / 'test BlackHole2ch.driver'
-        driver.mkdir()
-        installer = self.root / 'install.sh'
-        installer.write_text(installer.read_text().replace(
-            '/Library/Audio/Plug-Ins/HAL/BlackHole2ch.driver', str(driver)))
-        custom = self.bin / 'python custom'
-        self.executable(custom, 'printf "Python 3.12\\n"')
-        self.env['PYTHON'] = str(custom)
-        self.executable(self.voice.parent / 'python', 'printf "pip %s\\n" "$*" >>"$CALL_LOG"')
-        self.executable(self.voice, '''case "$1" in
-microphone) printf 'Passport Mic: present\\nDefault input: Built-in\\n' ;;
-devices) printf 'BlackHole 2ch\\n' ;;
---help) exit 0 ;;
-*) exit 1 ;;
-esac''')
+    def test_pipx_uninstall_failure_preserves_legacy_environment(self):
+        self.env['UNINSTALL_FAIL'] = '1'
+        self.assertNotEqual(self.run_script('uninstall.sh', '--yes').returncode, 0)
+        self.assertTrue(self.legacy.exists())
+
+    def test_legacy_only_uninstall_does_not_remove_a_pipx_package(self):
+        shutil.rmtree(self.venvs)
+        self.assertEqual(self.run_script('uninstall.sh', '--yes').returncode, 0)
+        self.assertIn('legacy cleanup', self.log.read_text())
+        self.assertNotIn('pipx uninstall', self.log.read_text())
+
+    def test_install_refreshes_owned_package_and_runs_setup(self):
         for _ in range(2):
             result = self.run_script('install.sh')
             self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(self.voice.exists())
+        calls = self.log.read_text()
+        self.assertIn('pipx install --editable ' + str(self.root / 'bridge') + ' --force', calls)
+        self.assertIn('setup\n--legacy-state-dir\n' + str(self.root / '.local'), calls)
+        self.assertNotIn('legacy ', calls)
 
-    def test_configure_preserves_shortcut_and_serial_parameters(self):
+    def test_first_install_creates_pipx_environment_without_force(self):
+        template = Path(self.temp.name) / 'template'
+        shutil.copytree(self.voice.parent, template)
+        shutil.rmtree(self.venvs)
+        self.env['TEMPLATE'] = str(template)
+        self.executable(self.bin / 'pipx', """printf 'pipx %s\n' "$*" >>"$CALL_LOG"
+case "$1" in
+environment) printf '%s\n' "$PIPX_VENVS" ;;
+install)
+    mkdir -p "$PIPX_VENVS/passport-voice-bridge/bin"
+    cp "$TEMPLATE/python" "$TEMPLATE/passport-voice" "$PIPX_VENVS/passport-voice-bridge/bin/"
+    ;;
+esac""")
+        result = self.run_script('install.sh')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('--force', self.log.read_text())
+        self.assertIn('setup\n', self.log.read_text())
+
+    def test_custom_python_rebuilds_the_owned_environment(self):
+        self.env['PYTHON'] = '/custom python/bin/python'
+        result = self.run_script('install.sh')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('pipx reinstall passport-voice-bridge --python /custom python/bin/python', self.log.read_text())
+        self.assertNotIn('--force', self.log.read_text())
+
+    def test_install_failure_does_not_run_setup(self):
+        self.env['INSTALL_FAIL'] = '1'
+        self.assertNotEqual(self.run_script('install.sh').returncode, 0)
+        self.assertNotIn('setup\n', self.log.read_text())
+
+    def test_configure_uses_pipx_and_preserves_parameters(self):
+        shutil.rmtree(self.root / 'bridge/.venv')
         result = self.run_script('configure.sh', '/dev/cu.port with spaces', '--shortcut', 'ctrl+shift+v')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.log.read_text().splitlines(),
+        self.assertEqual(self.log.read_text().splitlines()[1:],
                          ['configure', '--serial', '/dev/cu.port with spaces', '--shortcut', 'ctrl+shift+v'])

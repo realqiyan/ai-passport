@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Save the shortcut and optional Wi-Fi configuration over USB.
 set -euo pipefail
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-voice="$here/bridge/.venv/bin/passport-voice"
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+source "$here/bridge-command.sh"
 if [ "${1:-}" = --help ]; then
     printf '用法：configure.sh [串口] --shortcut ctrl+shift+v [--wifi-ssid 网络名]\n先停止 USB 桥接，并关闭麦克风。\n'
     exit 0
 fi
-[ -x "$voice" ] || { printf '请先运行 %s/install.sh\n' "$here" >&2; exit 1; }
+[ -n "$voice" ] || { printf '请先运行 %s/install.sh\n' "$here" >&2; exit 1; }
 if [ $# -gt 0 ] && [ "${1#-}" = "$1" ]; then
     port="$1"
     shift

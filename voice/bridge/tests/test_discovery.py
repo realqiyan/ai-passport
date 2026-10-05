@@ -88,6 +88,19 @@ class DiscoverySessionTests(unittest.TestCase):
         self.assertEqual(address, "192.0.2.2")
         self.assertEqual(self.host_file.read_text(), "192.0.2.2\n")
 
+    def test_explicit_address_is_cached_only_after_authentication(self):
+        self.args.discover = False
+        self.args.host = '192.0.2.3'
+        self.host_file.write_text('192.0.2.1\n')
+        with patch("voice_bridge.cli.TcpLink") as link, patch("voice_bridge.cli.Session") as session:
+            session.return_value.request.side_effect = PermissionError('bad token')
+            with self.assertRaises(PermissionError):
+                open_session(self.args)
+            self.assertEqual(self.host_file.read_text(), '192.0.2.1\n')
+            session.return_value.request.side_effect = None
+            open_session(self.args)
+            self.assertEqual(self.host_file.read_text(), '192.0.2.3\n')
+
     def test_old_firmware_can_use_saved_address(self):
         self.host_file.write_text("192.0.2.1\n")
         _, address = self.connect(failure=TimeoutError("no discovery"))
@@ -117,7 +130,7 @@ class DiscoverySessionTests(unittest.TestCase):
                 self.args.host = None if automatic else "192.0.2.1"
                 with patch("voice_bridge.cli.discover_host") as find, patch(
                         "voice_bridge.cli.TcpLink") as link:
-                    with self.assertRaisesRegex(RuntimeError, "configure.sh.*--wifi-ssid"):
+                    with self.assertRaisesRegex(RuntimeError, "passport-voice configure.*--wifi-ssid"):
                         open_session(self.args)
                     find.assert_not_called()
                     link.assert_not_called()
