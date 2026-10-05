@@ -1,4 +1,2 @@
 cmake==4.4.4
 ninja==1.13.2
-fonttools==4.66.1
-brotli==1.2.0

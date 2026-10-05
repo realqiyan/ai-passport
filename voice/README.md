@@ -6,7 +6,7 @@
 
 2026-10-05 当前版本：支持确认键临时输入、再次确认结束并关麦，以及保存或临时覆盖快捷键。完整固件门禁通过；桥接测试 51 项中 49 项通过、2 项因 Linux 缺少 macOS 框架跳过，脚本与刷机测试 25 项通过。本轮未刷写设备。省电规则、迁移步骤及未验证边界见下文和 [审查记录](REVIEW.md)。
 
-当前版本是独立应用，固件启动进入语音页面。设备重启后麦克风关闭，音频传输默认为 USB。时钟源码保留在相邻 `clock/` 目录。
+当前版本是独立应用，固件启动进入语音页面。设备重启后麦克风关闭，音频传输默认为 USB。
 
 ## 快速开始
 
@@ -68,7 +68,7 @@ projects/ai-passport/voice/uninstall.sh --yes    # 跳过确认
 | BlackHole 2ch | 可能被其他程序共用；卸载命令为 `brew uninstall --cask blackhole-2ch` |
 | 辅助功能授权 | 需要手动在“隐私与安全性”里移除 |
 | 输入法的麦克风选择 | 需要手动改回 |
-| 设备固件与 NVS | 设备仍保存 Wi-Fi 配置和令牌；刷回时钟应用仍保留 `voice_v1` 配置；清除配置需另行擦除对应 NVS 数据 |
+| 设备固件与 NVS | 设备仍保存 Wi-Fi 配置和令牌；清除配置需另行擦除对应 NVS 数据 |
 
 ## 自动省电
 
@@ -253,14 +253,14 @@ Mac 程序连接设备的 TCP `8765` 端口，网络必须允许同一局域网�
 | `firmware/tests/`、`bridge/tests/` | 固定数据和本地 TCP 测试，桥接侧不依赖真实音频设备 |
 | `../apply_voice.py` | 将源码应用到独立官方工作树 |
 
-2026-10-05 按用户要求将本机 `source/` 和 `voice-source/` 移入回收站，其中的固件归档也已移走。下面的恢复流程用于再次构建；验收结果保留为历史记录。
+2026-10-05 本机 `source/` 和 `voice-source/` 已从回收站恢复，语音固件归档校验通过。当前编译依赖官方完整工程；`voice/firmware/` 保存应用改动，需通过 `apply_voice.py` 同步到 `voice-source/` 后构建。下面的恢复流程用于目录缺失或换机器的情况。
 
 从工作区根目录恢复工作树与源码。`source/` 缺失时，先恢复官方仓库并固定基线：
 
 ```bash
 # source/ 不存在时执行
 git clone --filter=blob:none https://github.com/FoloToy/ai-passport.git projects/ai-passport/source
-git -C projects/ai-passport/source checkout -b feature/offline-clock 33d3d1d93a1125b356b47b6d83a7a60121be801e
+git -C projects/ai-passport/source checkout --detach 33d3d1d93a1125b356b47b6d83a7a60121be801e
 
 # voice-source/ 不存在时执行
 git -C projects/ai-passport/source worktree add ../voice-source -b feature/voice-input 33d3d1d93a1125b356b47b6d83a7a60121be801e
@@ -310,7 +310,7 @@ PYTHON=projects/ai-passport/voice/bridge/.venv/bin/python \
 
 脚本先检查 ESP32-C3 镜像，再读取设备 `0x8000` 的分区表。只有 `0x10000` 为未加密的 factory 应用分区，且镜像能放下时才执行写入。随后运行 `verify_flash`。镜像在检查前复制到临时目录，防止检查后源文件被替换。
 
-此前验证的应用大小为 1,212,512 字节；历史归档为 `8bd71c1dc3bc17e3e7c900e7c426d648f7d98c254c8b8987d246821f5098003b`。该本机归档已随工作树移入回收站；重新构建后使用新归档。不同机器重建可能产生不同哈希。脚本不写 `0x0` 的合并镜像，不改引导、分区表或 NVS。本轮未连接设备执行刷写。
+此前验证的应用大小为 1,212,512 字节；历史归档为 `8bd71c1dc3bc17e3e7c900e7c426d648f7d98c254c8b8987d246821f5098003b`。该本机归档已从回收站恢复并通过校验。重新构建后使用对应的新归档；不同机器重建可能产生不同哈希。脚本不写 `0x0` 的合并镜像，不改引导、分区表或 NVS。本轮未连接设备执行刷写。
 
 ## 音频与协议
 
@@ -350,7 +350,7 @@ PYTHON=projects/ai-passport/voice/bridge/.venv/bin/python \
 - Loopback level：PASS。源信号半满幅对应峰值 16,383、RMS 11,585。回环测得的 RMS 比值为 0.998 与 0.999，说明回环不改变音量。单次测得的峰值偏高（最高 +8%）不能复现：同一频率重复测量给出 +0% 到 +7%。该尖峰来自测试脚本输入流与输出流未同步产生的边界跳变，不是 BlackHole 的稳定特性。设备麦克风增益仍是唯一需要控制的电平因素。
 - Dictation setup：PASS。系统听写偏好记录 `DictationIMMicrophoneName` 为 `BlackHole 2ch`（标识 `BlackHole2ch_UID`），语言为 `zh_CN`，自定义快捷键为 Control+Option+Space（`keyChar` 32，`modifiers` 786432）。当时误判输入法为 macOS 自带听写，实际生效的是 Chatterfly。
 - Audio injection：PASS。用 `say` 生成 9.16 秒 16 kHz 单声道中文语音，播入 `BlackHole 2ch`，从输入录回后可见约 t=2 s 至 t=11 s 的语音段，与源时长一致。
-- Passport device：部分验证。设备原先运行时钟应用，`ports` 只列出 `/dev/cu.usbmodem2101`（USB JTAG/serial debug unit）。
+- Passport device：部分验证。`ports` 只列出 `/dev/cu.usbmodem2101`（USB JTAG/serial debug unit）。
 
 ### 2026-10-05 固件构建与刷机（含 BLE HID 版本）
 

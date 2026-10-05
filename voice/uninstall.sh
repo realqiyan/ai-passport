@@ -120,7 +120,7 @@ cat <<TXT
    设备侧
    4. 设备仍保存着 Wi-Fi 配置和令牌，桥接已删除，设备不会再被连上。
       重装后运行 install.sh，再用 passport-voice configure 重新配网；
-      刷回时钟应用会保留 voice_v1 配置；清除配置需要另行擦除对应 NVS 数据。
+      清除设备配置需要另行擦除对应 NVS 数据。
 TXT
 
 printf '\n卸载完成。\n'
