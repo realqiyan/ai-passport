@@ -27,7 +27,9 @@
 
 当前编译依赖完整官方工程。先运行 `apply_voice.py`，再在 `voice-source/` 构建。`source/` 保持官方基线，工作树关系和语音归档已核验。
 
-官方工程和工具目录由工作区 Git 忽略。换机器后，按[开发手册](DEVELOPMENT.md)恢复它们；维护源码和文档由根仓库保存。
+`source/` 和 `voice-source/` 均在 `.gitignore` 中。根仓库的 commit/push 不包含它们，`git clone`、`git pull` 和 `git restore` 也不会恢复它们。此前恢复仅发生在当时的本机工作区，不代表其他机器已有这些目录。
+
+首次检出、换机器或目录缺失时，按[开发手册的恢复步骤](DEVELOPMENT.md#恢复固件源码)下载固定官方基线、创建语音工作树，再运行 `apply_voice.py`。ESP-IDF 工具链需另行安装；维护源码和文档由根仓库保存。
 
 ## 打开 USB 串口会复位设备
 

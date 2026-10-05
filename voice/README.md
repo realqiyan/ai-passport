@@ -253,7 +253,9 @@ Mac 程序连接设备的 TCP `8765` 端口，网络必须允许同一局域网�
 | `firmware/tests/`、`bridge/tests/` | 固定数据和本地 TCP 测试，桥接侧不依赖真实音频设备 |
 | `../apply_voice.py` | 将源码应用到独立官方工作树 |
 
-2026-10-05 本机 `source/` 和 `voice-source/` 已从回收站恢复，语音固件归档校验通过。当前编译依赖官方完整工程；`voice/firmware/` 保存应用改动，需通过 `apply_voice.py` 同步到 `voice-source/` 后构建。下面的恢复流程用于目录缺失或换机器的情况。
+2026-10-05 曾在当时的本机工作区恢复 `source/` 和 `voice-source/`，并校验语音固件归档。这是本机记录，不代表其他机器已具备这些目录。
+
+两者均在 `.gitignore` 中，根仓库的 commit/push 不包含它们，`git clone`、`git pull` 和 `git restore` 也不会恢复它们。当前编译依赖官方完整工程；`voice/firmware/` 保存应用改动，需通过 `apply_voice.py` 同步到 `voice-source/` 后构建。下面的恢复流程用于目录缺失或换机器的情况。
 
 从工作区根目录恢复工作树与源码。`source/` 缺失时，先恢复官方仓库并固定基线：
 
@@ -267,7 +269,9 @@ git -C projects/ai-passport/source worktree add ../voice-source -b feature/voice
 python3 projects/ai-passport/apply_voice.py
 ```
 
-工作树已存在时跳过 `worktree add`。应用脚本只接受该官方基线，遇到目标文件被单独修改时停止，避免覆盖修改。
+工作树已存在时跳过 `worktree add`。分支 `feature/voice-input` 已存在而工作树缺失时，使用 `git -C projects/ai-passport/source worktree add ../voice-source feature/voice-input`。应用脚本只接受该官方基线，遇到目标文件被单独修改时停止，避免覆盖修改。
+
+恢复后用 `git -C projects/ai-passport/source worktree list` 核对两个目录。上述命令恢复源码，不会恢复此前固件归档；ESP-IDF 工具链需按[开发手册](../DEVELOPMENT.md#安装构建环境)另行安装。
 
 在已配置 ESP-IDF 5.5.3 的 Bash 会话中运行。需先激活项目内的 ESP-IDF 环境。恢复后的门禁会自动处理 macOS 链接器参数：
 

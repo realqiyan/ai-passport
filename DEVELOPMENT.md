@@ -28,7 +28,11 @@
 brew install cmake ninja actionlint
 ```
 
-从工作区根恢复固定官方基线及语音工作树：
+### 恢复固件源码
+
+`source/` 和 `voice-source/` 被根仓库忽略，commit/push 不会上传它们。仅执行 `git clone`、`git pull` 或 `git restore` 无法恢复这些目录。此前本机恢复记录不适用于新检出的工作区。
+
+两者都缺失时，从工作区根执行以下命令。先下载固定官方基线，再创建共享 Git 数据的语音工作树，最后应用维护源码：
 
 ```bash
 git clone --filter=blob:none https://github.com/FoloToy/ai-passport.git projects/ai-passport/source
@@ -37,7 +41,11 @@ git -C projects/ai-passport/source worktree add ../voice-source -b feature/voice
 python3 projects/ai-passport/apply_voice.py
 ```
 
-目录已存在时跳过创建。使用已有分支时，`worktree add` 不再给出 `-b`。官方最新分支可能与本基线不同；应用脚本只接受记录的提交。
+`source/` 已存在时跳过克隆；先用 `git -C projects/ai-passport/source status --short` 检查本地修改，避免切换基线时覆盖它们。`voice-source/` 已存在时跳过 `worktree add`。分支 `feature/voice-input` 已存在而工作树缺失时，使用 `git -C projects/ai-passport/source worktree add ../voice-source feature/voice-input`。
+
+两者恢复后，用 `git -C projects/ai-passport/source worktree list` 核对目录关系。官方最新分支可能与本基线不同；应用脚本只接受记录的提交。以上步骤恢复源码，不会恢复此前固件归档，也不会安装 ESP-IDF 工具链。
+
+### 安装构建环境
 
 准备项目开发环境与 ESP-IDF：
 
