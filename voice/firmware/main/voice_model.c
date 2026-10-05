@@ -2,8 +2,8 @@
 bool voice_shortcut_valid(int modifiers, int key) {
     return modifiers >= 0 && modifiers <= 255 && key >= 4 && key <= 0x73;
 }
-bool voice_can_trigger(bool audio, bool bridge, bool keyboard) {
-    return audio && bridge && keyboard;
+bool voice_can_trigger(bool audio, bool bridge) {
+    return audio && bridge;
 }
 
 bool voice_json_depth_valid(const uint8_t *data, size_t size) {

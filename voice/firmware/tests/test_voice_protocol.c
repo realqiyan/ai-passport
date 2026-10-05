@@ -43,8 +43,7 @@ int main(void) {
     assert(!voice_shortcut_valid(0, 0));
     for (int a = 0; a < 2; a++)
         for (int b = 0; b < 2; b++)
-            for (int c = 0; c < 2; c++)
-                assert(voice_can_trigger(a, b, c) == (a && b && c));
+            assert(voice_can_trigger(a, b) == (a && b));
     const uint8_t nested[] = "[[[[[[[[[0]]]]]]]]]";
     assert(!voice_json_depth_valid(nested, sizeof(nested) - 1));
     const uint8_t quoted[] = "{\"op\":\"{[test]}\"}";

@@ -7,7 +7,12 @@ name = "passport-voice-bridge"
 version = "0.1.0"
 description = "Receive AI Passport PCM and route it to a macOS audio input"
 requires-python = ">=3.10"
-dependencies = ["pyserial>=3.5,<4", "sounddevice>=0.5,<0.6"]
+dependencies = [
+  "pyserial>=3.5,<4",
+  "sounddevice>=0.5,<0.6",
+  "pyobjc-framework-Quartz>=10; sys_platform == 'darwin'",
+  "pyobjc-framework-CoreAudio>=10; sys_platform == 'darwin'",
+]
 
 [project.scripts]
 passport-voice = "voice_bridge.cli:main"

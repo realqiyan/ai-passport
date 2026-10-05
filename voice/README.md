@@ -1,89 +1,198 @@
 # AI Passport 语音输入应用
 
-更新日期：2026-10-05。用户已授权实施。设备使用自带麦克风采集音频，通过 BLE 键盘发送快捷键。Mac 程序把 USB 或 Wi-Fi 音频输出到 BlackHole，现有语音输入法从 BlackHole 读取音频。
+更新日期：2026-10-05。设备使用自带麦克风采集音频，通过 USB 或 Wi-Fi 把音频送到 Mac；按键请求由 Mac 桥接程序注入。Mac 程序把音频写入 BlackHole，语音输入法通过聚合设备 `Passport Mic` 读取音频。
 
-当前版本是独立应用。固件启动进入语音页面。设备重启后麦克风关闭，音频传输默认为 USB。时钟源码保留在相邻 `clock/` 目录。
+**2026-10-05 设计变更**：原设计的 BLE 键盘投递不可用。macOS 从未把 `Passport Voice` 挂载成 HID 键盘，蓝牙设置里也没有连接入口。快捷键改由桥接程序注入；设备只发送一条 `{"event":"shortcut","modifiers":N,"key":N}` 请求，不参与按键合成。BLE HID 代码已从固件移除，设备不再初始化蓝牙。
+
+当前版本是独立应用，固件启动进入语音页面。设备重启后麦克风关闭，音频传输默认为 USB。时钟源码保留在相邻 `clock/` 目录。
+
+## 快速开始
+
+```bash
+# 一次性安装（可重复运行）
+projects/ai-passport/voice/install.sh
+
+# 每次使用，二选一
+projects/ai-passport/voice/start.sh usb       # 有线
+projects/ai-passport/voice/start.sh wifi      # 无线，沿用上次记住的 IP
+```
+
+安装脚本会建虚拟环境、装桥接程序、检查 BlackHole 2ch，并在缺失时创建聚合设备 `Passport Mic`。它不安装任何系统软件包，缺少 BlackHole 时会给出命令并停止。
+
+安装完成后有**两项只能由人完成**的设置：
+
+1. **辅助功能权限。** 系统设置 → 隐私与安全性 → 辅助功能，允许运行桥接的终端应用，或直接允许 `voice/bridge/.venv/bin/python`。**授权后必须重启桥接程序**，macOS 在进程启动时固定这个授权。
+2. **在输入法里把麦克风选为 `Passport Mic`。** 详见[输入设备](#输入设备聚合设备与自动切换)。
+
+### 脚本用法
+
+| 命令 | 说明 |
+| --- | --- |
+| `install.sh` | 安装或更新 Mac 侧。只写自己目录内的文件和聚合设备 |
+| `start.sh usb [串口]` | 有线链路。串口省略时使用唯一的 `/dev/cu.usbmodem*` |
+| `start.sh wifi [IP]` | 无线链路。IP 省略时沿用上次的值，记在 `voice/.local/host` |
+| `uninstall.sh` | 卸载 Mac 侧，即 `install.sh` 的逆操作 |
+
+三个脚本都把多余参数原样转给 `passport-voice run`，例如 `start.sh usb --output 'BlackHole 2ch'`。`start.sh` 在前台运行，用 `Ctrl+C` 停止；退出时会还原系统默认输入设备。
+
+脚本按自身所在目录解析路径，可以在任何工作目录下调用。
+
+### 卸载
+
+```bash
+projects/ai-passport/voice/uninstall.sh          # 先列出要做什么，回答 yes 才执行
+projects/ai-passport/voice/uninstall.sh --yes    # 跳过确认
+```
+
+它会停止桥接、删除聚合设备 `Passport Mic`、删除 Wi-Fi 令牌与 `.local`、删除虚拟环境和构建残留。
+
+**系统默认输入仍是 `Passport Mic` 时它会拒绝执行**，因为此时删除会让输入法失去麦克风。先在“系统设置 → 声音 → 输入”里选别的设备再运行。
+
+以下项目不会被改动，脚本会给出提示：
+
+| 项目 | 原因 |
+| --- | --- |
+| BlackHole 2ch | 可能被其他程序共用；卸载命令为 `brew uninstall --cask blackhole-2ch` |
+| 辅助功能授权 | 需要手动在“隐私与安全性”里移除 |
+| 输入法的麦克风选择 | 需要手动改回 |
+| 设备固件与 NVS | 设备仍保存 Wi-Fi 配置和令牌；要清干净需刷回时钟应用或擦除 NVS |
+
+## 每次使用的流程
+
+1. 启动桥接：`start.sh usb` 或 `start.sh wifi`。等它打印 `Audio output ready`。
+2. 把光标放进要输入文字的输入框。
+3. 设备按**上键**开麦。屏幕显示 `MIC STREAMING`，桥接打印 `Default input: Passport Mic`。
+4. 设备按**确定**，输入法开始听写，然后说话。
+5. 设备按上键关麦，桥接打印 `Default input restored`。
+6. 在终端按 `Ctrl+C` 停止桥接。
+
+结束听写的方法按所用输入法设置；本版本没有实现“按住说话、松开结束”。设备屏幕的 `Shortcut sent` 只表示请求已交给桥接程序，不证明按键已注入，也不证明输入法开始听写。真正的成功标志是桥接程序打印 `Shortcut sent`。
 
 ## 设备操作
 
 | 操作 | 行为 |
 | --- | --- |
 | 上键单击 | 开启或关闭麦克风。电脑桥接未就绪时拒绝开启 |
-| 确定单击 | 在麦克风采集、电脑桥接和蓝牙键盘均就绪时，发送一次快捷键 |
+| 确定单击 | 在麦克风采集和电脑桥接就绪时，请桥接程序注入一次快捷键 |
 | 下键单击 | 麦克风关闭时切换 USB 与 Wi-Fi |
-| 确定长按 | 麦克风关闭时清除设备蓝牙绑定 |
-| 配对确认期间 | 确定接受屏幕上的数字比较，下键拒绝 |
 
-首次使用时，在 Mac 蓝牙设置中配对 `Passport Voice`。只有 Mac 和设备显示相同的六位数字时，才确认配对。若 Mac 忘记设备而设备仍保留绑定，清除两端绑定后重新配对。
+固件不再有蓝牙配对、数字比较确认和清除绑定，确定键长按不再有动作。macOS 蓝牙列表里若还留着一个 `Passport Voice`，那是系统缓存的历史条目，可以在蓝牙设置里移除；设备已不再广播。
 
-页面分别显示麦克风采集、电脑桥接和蓝牙键盘状态。`Shortcut sent` 只表示键盘发送成功，不证明输入法已经开始听写。结束听写的方法按所用输入法设置；本版本没有实现“按住说话、松开结束”。
+页面分别显示麦克风采集和电脑桥接状态。
 
-## Mac 安装与有线验证
+## 快捷键投递链
 
-在 Mac 的工作区根目录执行：
+一次完整触发经过四段，任一段失败都不会出字：
 
-```bash
-brew install blackhole-2ch
-python3 -m venv projects/ai-passport/voice/bridge/.venv
-projects/ai-passport/voice/bridge/.venv/bin/python -m pip install -e projects/ai-passport/voice/bridge
-```
+| 段 | 就绪条件 | 失败表现 |
+| --- | --- | --- |
+| 设备录音 | 上键已开麦、桥接心跳在 3 秒内 | 屏幕 `Need mic and bridge` |
+| 设备发请求 | 桥接就绪 | 屏幕 `Shortcut failed` |
+| 桥接注入 | 辅助功能已授权 | 桥接打印 `Shortcut not sent` |
+| 输入法取音频 | 默认输入为 `Passport Mic` | 桥接打印 `Default input: Passport Mic` |
 
-按 BlackHole 安装程序要求完成重启。以下命令使用项目虚拟环境，不要求激活 shell：
+默认快捷键为 `Control + Shift + V`。它是首版实现的默认值，用户可以改变。Fn 的外接键盘兼容性尚未实现，首版采用普通组合键。
 
-```bash
-projects/ai-passport/voice/bridge/.venv/bin/passport-voice devices
-projects/ai-passport/voice/bridge/.venv/bin/passport-voice ports
-```
+## 安装细节
 
-在语音输入法中选择 `BlackHole 2ch` 为麦克风。若使用 macOS 自带听写，在“系统设置 → 键盘 → 听写”中设置麦克风来源和快捷键。先用电脑键盘确认自定义快捷键能触发听写。
+### 辅助功能权限
 
-默认设备快捷键为 `Control + Option + Space`。它是首版实现默认值，用户可以改变。Fn 的外接键盘兼容性尚未实现，首版采用普通组合键。
+桥接程序用 `CGEventPost` 把按键注入当前前台应用，因此必须获得 macOS 辅助功能授权，否则注入被系统静默丢弃：
 
-用 `ports` 返回的实际设备路径替换 `<串口>`。先确保设备上的麦克风关闭，再保存快捷键：
+1. 打开“系统设置 → 隐私与安全性 → 辅助功能”。
+2. 允许运行桥接的终端应用，或直接允许 `voice/bridge/.venv/bin/python`。
+3. **重启桥接程序。** macOS 在进程启动时固定这个授权，运行中的进程不会取得新授予的权限。
 
-```bash
-projects/ai-passport/voice/bridge/.venv/bin/passport-voice configure --serial <串口> --shortcut ctrl+alt+space
-projects/ai-passport/voice/bridge/.venv/bin/passport-voice run --serial <串口> --output 'BlackHole 2ch'
-```
+未授权时桥接程序在启动和每次按键请求时打印提示。设备屏幕显示 `Shortcut sent` 只代表请求已发出，这种情况以桥接程序的输出为准。
 
-桥接程序就绪后，按上键启用麦克风。等待屏幕显示 `MIC STREAMING`。将光标放入输入框，按确定，再说话。按上键关闭麦克风。按 `Ctrl+C` 停止 Mac 桥接程序。
+### 输入设备：聚合设备与自动切换
 
-桥接启动时必须能打开所选音频输出，否则不报告就绪。它不会自动回退到电脑扬声器。输出名称有多个匹配时，用 `devices` 列出的数字索引明确选择。
+桥接把音频写入 `BlackHole 2ch`。部分语音输入法不列出虚拟设备，因此需要一个聚合设备：
+
+- 名称 `Passport Mic`，UID `com.ai-passport.aggregate.mic`，传输类型 `grup`，子设备为 `BlackHole 2ch`。
+- 实测腾讯 Chatterfly 的麦克风列表里没有 `BlackHole 2ch`——尽管它在 AVFoundation 的 `.microphone` 设备类型中可见——重启输入法也不出现；`Passport Mic` 会出现。
+- 聚合设备以 `private => 0` 创建，记录在 `/Library/Preferences/Audio/com.apple.audio.SystemSettings.plist` 的 `Meta_UIDList`，重启后保留。重新安装 BlackHole 会改变子设备 UID，届时需重建。
+- 创建和查状态用 `passport-voice microphone`，缺了加 `--create`。命令行只提供创建，不提供删除：创建是随时可用的恢复动作，删除则由 `uninstall.sh` 统一负责，也仍可用“音频 MIDI 设置”。
+
+Chatterfly 跟随**系统默认输入设备**，不保存自己选中的设备：二进制中存在 `kSGSpeechAudioInputDeviceUID` 与 `setSelectedDeviceUID:`，但该键在 `~/Library` 下没有任何落盘记录，下拉框的选择在默认设备被改动后即失效。因此桥接程序代管这个开关，且只在该开的时候开：
+
+| 设备状态 | 桥接程序动作 |
+| --- | --- |
+| 上键开麦（`mic` 变为 true） | 把默认输入设备切到 `Passport Mic` |
+| 关麦、拔线或桥接退出 | 还原为切换前的设备 |
+
+副作用只在录音期间存在：平时默认输入仍是电脑自带麦克风，视频会议等程序不受影响。`SIGTERM`、`SIGHUP` 和 `Ctrl+C` 都走同一套还原逻辑，实测退出码 0。用 `--mic-device` 换设备名，传空字符串则完全不改默认输入。
+
+排查设备列表用 `inputs`（输入，星号标出当前系统默认）和 `devices`（输出）。本机实测 `inputs` 会列出 `BlackHole 2ch` 和 `Passport Mic`，而 Chatterfly 自己的列表只显示 `Passport Mic`——过滤发生在输入法一侧，不是系统设备缺失。
+
+### 固件中的一处调用顺序
+
+固件在麦克风关闭后再次开启时，必须先调用 `bsp_audio_wake()` 再调用 `bsp_audio_init()`。`bsp_audio_sleep()` 会把编解码器留在低功耗态，而 `bsp_audio_set_format()` 以 `if (s_sleeping) return ESP_ERR_INVALID_STATE;` 开头；缺少唤醒调用时第二次开麦会失败并返回 `0x103`（259），麦克风再也开不起来。
 
 ## Wi-Fi 使用
 
-首版支持与 Mac 在同一局域网的 WPA2 或更高安全等级 Wi-Fi。它不支持开放网络、企业认证或热点自动配网。
+首版支持与 Mac 在同一局域网的 WPA2 或更高安全等级 Wi-Fi。它不支持开放网络、企业认证或热点自动配网，设备只支持 **2.4 GHz**。若路由器把两个频段拆成不同名字，必须填 2.4 GHz 那个。
 
 先在 USB 模式配置网络。程序交互式读取密码，终端不显示密码：
 
 ```bash
-projects/ai-passport/voice/bridge/.venv/bin/passport-voice configure --serial <串口> --wifi-ssid <网络名> --shortcut ctrl+alt+space
+projects/ai-passport/voice/bridge/.venv/bin/passport-voice configure \
+    --serial <串口> --wifi-ssid <网络名>
 ```
 
-程序生成并保存连接令牌，默认路径为 `voice/.local/token`。令牌文件权限为 `0600`。设备设置保存到 `voice_v1` NVS 命名空间。密码与令牌不写入源码、构建配置或状态输出。
+`--shortcut` 可以省略，此时设备保留当前快捷键；只有显式给出才会改写。配置 Wi-Fi 前必须**先停掉 USB 桥接**，串口不能被两个进程同时占用。SSID 须为 1–32 字节，密码须为 8–63 字节或 64 位十六进制 PSK。
 
-停止 USB 桥接。关闭麦克风，按下键切到 Wi-Fi。等待设备显示 IP 地址，然后执行：
+程序生成并保存连接令牌，默认路径为 `voice/.local/token`，权限 `0600`。不在默认路径时用 `--token-file <路径>`。设备设置保存到 `voice_v1` NVS 命名空间。密码与令牌不写入源码、构建配置或状态输出。
+
+配置完成后停止 USB 桥接，关闭麦克风，按下键切到 Wi-Fi，然后：
 
 ```bash
-projects/ai-passport/voice/bridge/.venv/bin/passport-voice run --host <设备IP> --output 'BlackHole 2ch'
+projects/ai-passport/voice/start.sh wifi <设备IP>
 ```
 
-若令牌保存在其他路径，两次命令均使用 `--token-file <路径>`。Mac 程序连接设备的 TCP `8765` 端口。网络必须允许同一局域网内的设备互访。
+Mac 程序连接设备的 TCP `8765` 端口，网络必须允许同一局域网内的设备互访。Wi-Fi 链路使用令牌校验访问，TCP 音频没有应用层加密，此版本用于可信局域网。只允许 USB 保存配置，网络客户端不能修改密码或快捷键。
 
-Wi-Fi 链路使用令牌校验访问，TCP 音频没有应用层加密。此版本用于可信局域网。只允许 USB 保存配置，网络客户端不能修改密码或快捷键。
+连接中断时，麦克风采集暂停，快捷键被阻止。恢复连接后重新运行桥接程序，状态心跳期限为三秒，设备不重放断线期间的按键。
 
-连接中断时，麦克风采集暂停，快捷键被阻止。恢复连接后重新运行桥接程序。状态心跳期限为三秒。设备不重放断线期间的按键。
+### 切到 Wi-Fi 后不要再用 USB 串口查状态
+
+**打开 `/dev/cu.usbmodem*` 会让 ESP32-C3 复位**（`rst:0x15 USB_UART_CHIP_RESET`，不是崩溃），而复位会把传输模式退回 USB。因此：
+
+- Wi-Fi 模式下不要用 `--serial` 的工具查状态，会立刻把设备打回 USB 模式。改用屏幕，或直接 `--host` 连 TCP。
+- 反复开关串口会形成表面上的“不停重启”：设备每秒被复位一次，屏幕持续闪。这不是固件故障。
+- USB 模式下，每次启动桥接都会复位设备一次（`start.sh` 会提示）。桥接能自行恢复，但这是已知代价。
+
+详见[设备级说明](../README.md#打开-usb-串口会复位设备)。
+
+## 故障排查
+
+| 现象 | 原因 | 处理 |
+| --- | --- | --- |
+| 屏幕不停闪，像在反复重启 | 有工具在反复打开串口 | 停止轮询。Wi-Fi 模式下改看屏幕或连 TCP |
+| 桥接打印 `Shortcut not sent` | 未获辅助功能授权 | 授权后**重启桥接** |
+| 桥接打印 `Default input unchanged: No input device is named 'Passport Mic'` | 聚合设备缺失 | `passport-voice microphone --create` |
+| 桥接没打印 `Default input: Passport Mic`，输入法不出字 | 默认输入没切过去 | 检查 `--mic-device`，用 `inputs` 看当前默认 |
+| 桥接报 `Select usb on the device with DOWN` | 设备传输模式与参数不符 | 关麦后按下键切换，再重启桥接 |
+| 桥接报 `Device changed audio transport` | 运行中切换了传输 | 重启桥接（这是刻意的安全检查） |
+| 屏幕 `Need mic and bridge` | 未开麦或桥接未就绪 | 先启动桥接，再按上键开麦 |
+| 屏幕 `Shortcut failed` | 请求没送出去 | 检查链路，USB 看串口、Wi-Fi 看 IP |
+| 桥接报 `No route to host` | Wi-Fi 瞬时不可达 | 直接重试；实测重试即成功 |
+| 桥接报 `No device frames for 3 seconds` | 链路断开 | 检查设备屏幕与网络，重新启动桥接 |
 
 ## 源码与构建
 
 | 路径 | 用途 |
 | --- | --- |
+| `install.sh`、`start.sh`、`uninstall.sh` | Mac 侧安装、启动与卸载入口 |
 | `firmware/main/main.c` | 独立语音页面、按键和状态显示 |
-| `firmware/main/voice_hid.c` | BLE HID、数字比较配对、键盘按下和释放 |
-| `firmware/main/voice_runtime.c` | 分块录音、USB/Wi-Fi、配置保存和心跳 |
+| `firmware/main/voice_runtime.c` | 分块录音、USB/Wi-Fi、配置保存、心跳和快捷键请求 |
 | `firmware/main/voice_protocol.c` | 有长度限制和 CRC32 的帧协议 |
-| `bridge/voice_bridge/` | Mac 音频桥接与配置 CLI |
-| `firmware/tests/`、`bridge/tests/` | 固定数据和本地 TCP 测试 |
+| `bridge/voice_bridge/cli.py` | 桥接主循环、命令入口和默认输入切换时机 |
+| `bridge/voice_bridge/shortcut.py` | HID 用法码到 macOS 虚拟键码，以及 `CGEventPost` 注入 |
+| `bridge/voice_bridge/hostaudio.py` | CoreAudio 设备名、设备 UID 与默认输入的读写 |
+| `bridge/voice_bridge/microphone.py` | 聚合输入设备的描述、创建与状态报告 |
+| `bridge/voice_bridge/audio.py`、`protocol.py`、`transport.py` | 播放缓冲、帧协议和串口/TCP 链路 |
+| `firmware/tests/`、`bridge/tests/` | 固定数据和本地 TCP 测试，桥接侧不依赖真实音频设备 |
 | `../apply_voice.py` | 将源码应用到独立官方工作树 |
 
 从工作区根目录恢复工作树与源码：
@@ -93,17 +202,18 @@ git -C projects/ai-passport/source worktree add ../voice-source -b feature/voice
 python3 projects/ai-passport/apply_voice.py
 ```
 
-工作树已存在时跳过 `worktree add`。应用脚本只接受该官方基线。遇到目标文件被单独修改时停止，避免覆盖修改。
+工作树已存在时跳过 `worktree add`。应用脚本只接受该官方基线，遇到目标文件被单独修改时停止，避免覆盖修改。
 
-在已配置 ESP-IDF 5.5.3 的 Bash 会话中运行：
+在已配置 ESP-IDF 5.5.3 的 Bash 会话中运行。macOS 上两处环境必须显式给出，否则门禁会以 `idf.py is not available` 或 `ld: unknown options: --gc-sections` 失败：
 
 ```bash
-source projects/ai-passport/env.sh
+export IDF_TOOLS_PATH="$PWD/projects/ai-passport/.tools/espressif"
+source projects/ai-passport/.tools/esp-idf/export.sh
 cd projects/ai-passport/voice-source
-./tools/validate.sh
+CC=<LOCAL_PATH> ./tools/validate.sh
 ```
 
-Linux 上若本地 OpenOCD 缺少 libusb，先按相邻[开发手册](../DEVELOPMENT.md)加载项目内的库路径。构建环境不会把 Wi-Fi 密码编入镜像。
+`cc-macos` 把 `-Wl,--gc-sections` 换成 `-Wl,-dead_strip`，因为 macOS 的 ld64 不认前者。该包装脚本是可重建的临时件，按约定留在 `scratch/`，未进版本控制。Linux 上若本地 OpenOCD 缺少 libusb，先按相邻[开发手册](../DEVELOPMENT.md)加载项目内的库路径。构建环境不会把 Wi-Fi 密码编入镜像。
 
 Bridge 测试不依赖 Mac 音频设备：
 
@@ -130,28 +240,79 @@ PYTHONPATH=projects/ai-passport/voice/bridge python3 -m unittest discover -s pro
 
 ## 验收与边界
 
-2026-10-05 在 Linux 完成以下验证：
+### 2026-10-05 在 Linux 完成
 
 - Build：PASS。ESP-IDF 5.5.3 完整门禁通过，固件合并和分区布局检查通过。
 - Host tests：PASS。官方静态与主机测试、语音协议与状态边界测试、8 项 Python 桥接测试通过。桥接程序可安装，CLI 入口有效。
 - UBSan：PASS。语音协议、JSON 深度限制、密码格式和心跳边界测试通过。
 - ASan：不可用。本环境中只返回零的空程序也退出为 139，不能用它判定应用内存安全。
-- Device tests：NOT RUN。当前 Linux 环境没有 Mac 或实体设备访问。麦克风、BLE、BlackHole 和听写均未做端到端验收。
+- Device tests：NOT RUN。该 Linux 环境没有 Mac 或实体设备访问。麦克风、BLE、BlackHole 和听写均未做端到端验收。
 
-固件归档位于 `../voice-source/build/firmware/9380cb28d7a1e3dd164f1e6ee5882be63c29cc28d2182e2ef6774bd15bfff1a0/`，归档验证通过：
+### 2026-10-05 在目标 Mac（Apple Silicon，Darwin 25.6.0）完成
 
-| 产物 | 大小或身份 |
-| --- | --- |
-| 应用镜像 `FoloToy-AI-Passport.bin` | 1,411,312 字节；写入地址 `0x10000` |
-| 应用 SHA-256 | `df946d25c43970c9e401dfc34fcfcc280bb240605fc88e4f2b2c6a2388f3700d` |
-| 合并镜像 `FoloToy-AI-Passport-full.bin` | 1,476,848 字节；写入地址 `0x0` |
-| 合并镜像 SHA-256 | `9380cb28d7a1e3dd164f1e6ee5882be63c29cc28d2182e2ef6774bd15bfff1a0` |
-| 匹配 ELF SHA-256 | `dc90a7bded7748f61b6f8d0bc77cd376220a27701e59eeb79d04db9546cd322a` |
+- Install：PASS。Homebrew cask `blackhole-2ch` 安装 0.7.1。驱动位于 `/Library/Audio/Plug-Ins/HAL/BlackHole2ch.driver`，标识 `audio.existential.BlackHole2ch`。
+- Load：PASS。执行 `sudo killall coreaudiod` 后，`passport-voice devices` 列出 `BlackHole 2ch`（2 进 2 出），未重启电脑。重启后的持久性未验证。
+- Bridge install：PASS。`voice/bridge/.venv` 由 Python 3.12.9 创建，`pip install -e` 装入 pyserial 3.5 与 sounddevice 0.5.6。`passport-voice devices` 与 `ports` 返回正常。
+- Host tests：PASS。本机虚拟环境中桥接测试通过。
+- Output open：PASS。`AudioSink` 以 16 kHz、2 声道、blocksize 320 打开 `BlackHole 2ch`，`check_output_settings` 通过。驱动默认采样率为 48 kHz。
+- Loopback：PASS。测试脚本经项目 `AudioSink` 写入约 2.4 秒 440 Hz 单声道音频，从 `BlackHole 2ch` 输入录回 38,720 帧，`gaps` 为 0。
+- Loopback level：PASS。源信号半满幅对应峰值 16,383、RMS 11,585。回环测得的 RMS 比值为 0.998 与 0.999，说明回环不改变音量。单次测得的峰值偏高（最高 +8%）不能复现：同一频率重复测量给出 +0% 到 +7%。该尖峰来自测试脚本输入流与输出流未同步产生的边界跳变，不是 BlackHole 的稳定特性。设备麦克风增益仍是唯一需要控制的电平因素。
+- Dictation setup：PASS。系统听写偏好记录 `DictationIMMicrophoneName` 为 `BlackHole 2ch`（标识 `BlackHole2ch_UID`），语言为 `zh_CN`，自定义快捷键为 Control+Option+Space（`keyChar` 32，`modifiers` 786432）。当时误判输入法为 macOS 自带听写，实际生效的是 Chatterfly。
+- Audio injection：PASS。用 `say` 生成 9.16 秒 16 kHz 单声道中文语音，播入 `BlackHole 2ch`，从输入录回后可见约 t=2 s 至 t=11 s 的语音段，与源时长一致。
+- Passport device：部分验证。设备原先运行时钟应用，`ports` 只列出 `/dev/cu.usbmodem2101`（USB JTAG/serial debug unit）。
 
-本次 Linux 构建时磁盘空间不足，已用 `TMPDIR=/dev/shm` 存放临时构建文件。语音工作树的门禁支持 `TMPDIR` 并清理自己的临时目录。固件归档仍保存在项目目录，不删除已有工具缓存或历史固件。
+### 2026-10-05 固件构建与刷机（含 BLE HID 版本）
 
-固件构建、主机测试和实体设备测试分别记录。首版必须在 Mac 上验证 BlackHole 能被实际输入法使用。麦克风响度、噪声、句首保留、BLE 数字比较配对、快捷键、Wi-Fi/BLE 共存与功耗均需设备实测。
+- Worktree：`projects/ai-passport/voice-source`，分支 `feature/voice-input`，基线 `33d3d1d9`。`apply_voice.py` 当时应用 13 个文件；移除 HID 后为 11 个。
+- Gate：PASS。用 `CC=scratch/ai-passport-voice/cc-macos`（把 `-Wl,--gc-sections` 换成 `-Wl,-dead_strip`）运行 `./tools/validate.sh`，退出码 0。仓库检查扫描 273 个文本文件；BSP 按键、LVGL、音频、音频工作线程、低功耗、BLE、Wi-Fi 回滚与主机测试全部通过；固件布局检查包含 3 MB `factory` at `0x10000` 一项。目标编译器为 riscv32-esp-elf GCC 14.2.0。
+- Artifact（含 BLE HID）：应用镜像 1,411,312 字节，SHA-256 `00e91471…`；合并镜像 1,476,848 字节，SHA-256 `e1b4e555…`；ELF SHA-256 `857dc3b9…`。归档为 `voice-source/build/firmware/e1b4e555…/`。
+- 与 Linux 构建的差异：大小完全相同（1,411,312 / 1,476,848 字节），哈希不同（Linux 应用镜像 `df946d25…`、合并镜像 `9380cb28…`、ELF `dc90a7bd…`）。跨机器构建不保证逐字节一致，两个归档各自自洽。
+- 设备分区表（刷写前回读）：`nvs` `0x9000`/24K、`phy_init` `0xf000`/4K、`factory` app `0x10000`/3M、`cardid` `0x356000`/16K、`easter` `0x360000`/388K、`recovery` `0x700000`/1M。
+- Flash：PASS。只写 `0x10000` 处的应用镜像，未做全片擦除，未改分区表、NVS、`cardid`、`easter` 与 `recovery`。`verify_flash` 回读摘要一致。
+- Boot：部分验证。串口只有二级引导日志，其中 `Loaded app from partition at offset 0x10000` 证明应用从应用分区加载。应用层日志按配置关闭（`CONFIG_LOG_DEFAULT_LEVEL_NONE`），没有应用日志可核对。
 
-设备当前已有分区表中的应用分区为 `0x10000`、3 MB。后续写入前须核对新应用大小和设备布局。建议只写已核验的应用镜像，保留其它分区。本轮实施授权不包含刷机、全片擦除或发布。
+回环测试中的 37 次 `underruns` 来自测试脚本的固定间隔喂数与启动前的空缓冲，不是桥接缺陷。
+
+### 2026-10-05 端到端联调
+
+投递链四段全部实测通过：
+
+- Shortcut injection：PASS。`shortcut.py` 把 HID 用法码映射为 macOS 虚拟键码，用 `CGEventPost` 注入到 `kCGHIDEventTap`。`ctrl+shift+v` 的按键序列实测为键码 59（Control）、56（Shift）、9（V）依次按下再逆序释放，事件标志位依次为 1、3、3、3、1、0。
+- Accessibility：PASS。授权前桥接打印 `Shortcut not sent: macOS does not trust this process`；授权后必须重启桥接才对运行中的程序生效，与“macOS 在进程启动时固定授权”一致。
+- 设备端触发：PASS。按下设备确定键后屏幕显示 `Shortcut sent`，桥接打印 `Shortcut sent`，输入法开始听写并出字。
+- 麦克风恢复：PASS。补上 `bsp_audio_wake()` 后，麦克风关闭再开启可重复工作，不再返回 `0x103`。
+- 聚合设备与默认输入切换：PASS。Chatterfly 的麦克风列表出现 `Passport Mic`；桥接在开麦时打印 `Default input: Passport Mic`、关麦时打印 `Default input restored`，系统默认输入随之改变和还原。
+- 进程清理：PASS。麦克风处于开启状态时发送 `SIGTERM`，默认输入仍还原为 `MacBook Pro麦克风`，Python 进程退出码 0。
+- 未验证：实际重启后聚合设备与辅助功能授权是否保持；设备长时间开麦的稳定性。
+
+### 2026-10-05 移除 BLE 键盘并重刷
+
+- 变更：删除 `firmware/main/voice_hid.c` 与 `voice_hid.h`（237 行）；`main/CMakeLists.txt` 从 `SRCS` 去掉该文件、从 `REQUIRES` 去掉 `bt`；`main.c` 去掉 HID 头文件、`hid_label` 状态行、配对确认分支、确定键长按清除绑定和 `voice_hid_init()`；`voice_runtime.c` 的状态 JSON 去掉 `hid` 字段，桥接程序的 `brief` 同步去掉；`apply_voice.py` 不再追加 `CONFIG_BT_NIMBLE_NVS_PERSIST` 与 `CONFIG_BT_NIMBLE_SM_SC`。屏幕的地址行与消息行上移到 137 和 172，补上原有空位。
+- Gate：PASS。ESP-IDF 5.5.3 完整门禁退出码 0，固件布局检查 `app 1205920 / 8323072 bytes in 'factory' at 0x10000`。
+- Artifact：应用镜像 1,205,920 字节（较上一版减少 205,392 字节，即移除的 BLE 栈），SHA-256 `2fb24bb4…`；合并镜像 1,271,456 字节，SHA-256 `d2d8400d…`；ELF SHA-256 `84d2f33d…`。归档 `voice-source/build/firmware/d2d8400d…/`，`manifest.json` 记录的哈希与实际文件一致。
+- Flash：PASS。只写 `0x10000` 处的应用镜像，未做全片擦除。`verify_flash` 回读摘要一致。
+- 分区表（刷写后回读）：`nvs` `0x9000`/24K、`phy_init` `0xf000`/4K、`factory` `0x10000`/3072K、`cardid` `0x356000`/16K、`easter` `0x360000`/388K、`recovery` `0x700000`/1024K，与刷写前一致。
+- 桌面核验：PASS。桥接程序启动后状态不含 `hid` 字段。macOS 蓝牙列表仍显示 `Passport Voice`，但只有地址、没有连接状态，属于系统缓存的历史条目。
+- 设备界面与按键：PASS。用户确认重刷后屏幕显示、上键开关麦、确定键触发和按下键切换传输均正常。
+
+### 2026-10-05 Wi-Fi 链路端到端验收
+
+- Configure：PASS。`configure --wifi-ssid` 在设备处于 USB 模式、麦克风关闭时写入 SSID、密码与令牌；令牌落到 `voice/.local/token`（64 位十六进制，权限 0600）。设备原有快捷键未被改写，仍为 `modifiers=3`、`key=25`（Ctrl+Shift+V）。
+- 关联：PASS。设备下键切到 Wi-Fi 后取得地址 `192.0.2.2`（Mac 侧为 `192.0.2.1`，同网段）。ICMP 3/3 可达，但往返延迟 66–253 ms，抖动明显。
+- TCP：PASS。8765 端口 `create_connection` 耗时 0.10 秒。
+- 语音输入：PASS。桥接以 `--host 192.0.2.2` 启动后 `bridge: true`，开麦后 `mic` 与 `audio` 均为 true，快捷键注入并出字。
+- 丢帧：**`drops` 为 0**。尽管 ICMP 延迟抖动很大，20 ms 一块的音频经 Wi-Fi 未丢帧。
+- 离线性：PASS。**拔掉 USB 线后由电池供电，语音输入仍然出字**，这是 Wi-Fi 模式的主要目的。
+- 未验证：长时间连续说话的丢帧、休眠与断线重连、Wi-Fi 模式的续航。
+
+### 2026-10-05 安装与启动脚本
+
+- 聚合设备脚本化：PASS。`passport-voice microphone --create` 用 pyobjc 的 `AudioHardwareCreateAggregateDevice` 建出设备，实测新建后 `/Library/Preferences/Audio/com.apple.audio.SystemSettings.plist` 中的定义与手工建立的逐字段一致（`name`、`uid`、`private` 为 false、`stacked` 为 false、子设备 `BlackHole2ch_UID`）。设备号每次枚举会变（实测出现过 120、124、149、153），因此桥接按名称寻址而不是设备号。
+- 安装脚本：PASS。`install.sh` 重复运行返回 0，已存在的聚合设备不被改动。
+- 启动脚本：PASS。用桩程序验证 8 种参数组合：无参数、未知模式、指定串口、自动识别串口、透传桥接选项、指定 IP、沿用记住的 IP、IP 与透传混用；另验证聚合设备缺失告警和未安装桥接两种分支。
+- Host tests：PASS。桥接测试 35 项通过，新增聚合设备描述、创建、删除、上报与 pyobjc 调用契约的边界。
+- 卸载脚本：PASS。用桩程序在沙箱中验证 31 项，覆盖正常卸载、默认输入未改时拒绝执行、聚合设备缺失、虚拟环境缺失、回答 no 取消、回答 yes 执行、未知参数、有桥接在跑时先停止八种情况。沙箱不接触真实环境，以免删建虚拟环境影响已有的辅助功能授权。
+- 未验证：在全新 Mac 上从零运行的完整流程；在真实设备上执行一次完整卸载。
+- 删除接口的取舍：`microphone --remove` 曾作为命令行开关存在，但其“不得删除默认输入”的保护只覆盖一种情况，实测能绕过并删掉正在使用的设备，因此撤下。删除逻辑改由 `uninstall.sh` 单独调用，并在脚本最前面做预检。
 
 资料：[方案分析](../VOICE-INPUT.md)、[项目状态](../README.md)、[BlackHole](https://github.com/ExistentialAudio/BlackHole)、[macOS 听写](https://support.apple.com/guide/mac-help/use-dictation-mh40584/mac)。

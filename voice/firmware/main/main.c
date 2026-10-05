@@ -8,7 +8,6 @@
 #include "freertos/task.h"
 #include "lvgl.h"
 #include "nvs_flash.h"
-#include "voice_hid.h"
 #include "voice_model.h"
 #include "voice_runtime.h"
 #include <stdio.h>
@@ -18,7 +17,7 @@ typedef struct {
     bsp_btn_ev_t event;
 } input_t;
 static QueueHandle_t inputs;
-static lv_obj_t *battery_label, *mic_label, *link_label, *hid_label, *message_label, *address_label;
+static lv_obj_t *battery_label, *mic_label, *link_label, *message_label, *address_label;
 static const char *message = "Start the Mac bridge";
 static int64_t message_until;
 static lv_obj_t *label(lv_obj_t *screen, int y, const lv_font_t *font, uint32_t color) {
@@ -44,9 +43,8 @@ static void ui_create(void) {
     lv_obj_align(battery_label, LV_ALIGN_TOP_RIGHT, -16, 24);
     mic_label = label(screen, 75, &lv_font_montserrat_20, 0xf4f7fb);
     link_label = label(screen, 112, &lv_font_montserrat_14, 0xbac8d6);
-    hid_label = label(screen, 137, &lv_font_montserrat_14, 0xbac8d6);
-    address_label = label(screen, 165, &lv_font_montserrat_14, 0x78ddbe);
-    message_label = label(screen, 198, &lv_font_montserrat_14, 0xffcb75);
+    address_label = label(screen, 137, &lv_font_montserrat_14, 0x78ddbe);
+    message_label = label(screen, 172, &lv_font_montserrat_14, 0xffcb75);
     lv_obj_t *help = label(screen, 246, &lv_font_montserrat_14, 0xbac8d6);
     lv_label_set_text(help, "UP: microphone\nOK: shortcut\nDOWN: USB / Wi-Fi");
     lv_screen_load(screen);
@@ -81,8 +79,6 @@ void app_main(void) {
     esp_err_t err = nvs_flash_init(); /* Never erase NVS to hide an error. */
     if (err == ESP_OK)
         err = voice_runtime_init();
-    if (err == ESP_OK)
-        err = voice_hid_init();
     if (err != ESP_OK) {
         voice_error = err;
         message = "Startup failed";
@@ -94,43 +90,30 @@ void app_main(void) {
     int64_t battery_at = -30000000;
     for (;;) {
         input_t input;
-        if (xQueueReceive(inputs, &input, pdMS_TO_TICKS(50)) == pdTRUE && err == ESP_OK) {
-            int pairing = voice_hid_pairing_code();
-            if (pairing >= 0) {
-                if (input.event == BSP_BTN_CLICK && input.button == BSP_BTN_OK)
-                    voice_hid_confirm(true);
-                if (input.event == BSP_BTN_CLICK && input.button == BSP_BTN_DOWN)
-                    voice_hid_confirm(false);
-            } else if (input.event == BSP_BTN_CLICK) {
-                if (input.button == BSP_BTN_UP) {
-                    if (voice_mic) {
-                        voice_mic = false;
-                        show_message("Microphone off");
-                    } else if (!voice_bridge_ready())
-                        show_message("Bridge is not ready");
-                    else {
-                        voice_mic = true;
-                        show_message("Microphone enabled");
-                    }
-                } else if (input.button == BSP_BTN_DOWN) {
-                    if (voice_mic)
-                        show_message("Stop microphone first");
-                    else {
-                        voice_wifi_mode = !voice_wifi_mode;
-                        show_message("Transport changed");
-                    }
-                } else if (input.button == BSP_BTN_OK) {
-                    if (!voice_can_trigger(voice_mic && voice_audio, voice_bridge_ready(),
-                                           voice_hid_ready()))
-                        show_message("Need mic, bridge, BLE");
-                    else
-                        show_message(voice_hid_shortcut(voice_modifier(), voice_key()) == ESP_OK
-                                         ? "Shortcut sent"
-                                         : "Shortcut failed");
+        if (xQueueReceive(inputs, &input, pdMS_TO_TICKS(50)) == pdTRUE && err == ESP_OK &&
+            input.event == BSP_BTN_CLICK) {
+            if (input.button == BSP_BTN_UP) {
+                if (voice_mic) {
+                    voice_mic = false;
+                    show_message("Microphone off");
+                } else if (!voice_bridge_ready())
+                    show_message("Bridge is not ready");
+                else {
+                    voice_mic = true;
+                    show_message("Microphone enabled");
                 }
-            } else if (input.event == BSP_BTN_LONG && input.button == BSP_BTN_OK && !voice_mic) {
-                voice_hid_clear_bonds();
-                show_message("Pairing cleared");
+            } else if (input.button == BSP_BTN_DOWN) {
+                if (voice_mic)
+                    show_message("Stop microphone first");
+                else {
+                    voice_wifi_mode = !voice_wifi_mode;
+                    show_message("Transport changed");
+                }
+            } else if (input.button == BSP_BTN_OK) {
+                if (!voice_can_trigger(voice_mic && voice_audio, voice_bridge_ready()))
+                    show_message("Need mic and bridge");
+                else
+                    show_message(voice_trigger() ? "Shortcut sent" : "Shortcut failed");
             }
         }
         int64_t now = esp_timer_get_time();
@@ -150,17 +133,13 @@ void app_main(void) {
         snprintf(text, sizeof(text), "%s | Bridge %s", voice_wifi_mode ? "Wi-Fi" : "USB",
                  voice_bridge_ready() ? "ready" : "offline");
         set_text(link_label, text);
-        set_text(hid_label, voice_hid_ready() ? "Bluetooth keyboard ready" : "Pair Passport Voice");
         if (voice_wifi_mode) {
             voice_ip(ip, sizeof(ip));
             snprintf(text, sizeof(text), "%s", ip);
         } else
             snprintf(text, sizeof(text), "USB audio bridge");
         set_text(address_label, text);
-        int pairing = voice_hid_pairing_code();
-        if (pairing >= 0)
-            snprintf(text, sizeof(text), "Compare %06d\nOK: yes / DOWN: no", pairing);
-        else if (voice_error)
+        if (voice_error)
             snprintf(text, sizeof(text), "Error: 0x%x", voice_error);
         else
             snprintf(text, sizeof(text), "%s",

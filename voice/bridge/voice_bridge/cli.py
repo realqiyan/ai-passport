@@ -1,13 +1,18 @@
 """Configure the device and forward PCM to a selected virtual output."""
 import argparse
+import contextlib
 import getpass
 import json
 import os
 from pathlib import Path
 import secrets
+import signal
 import sys
 import time
+from . import microphone
+from .hostaudio import CoreAudio, InputSwitcher
 from .protocol import COMMAND, PCM, STATUS, Parser, encode
+from .shortcut import Injector, trusted
 from .transport import SerialLink, TcpLink
 
 MODIFIERS = {"ctrl": 1, "shift": 2, "alt": 4, "cmd": 8}
@@ -97,8 +102,12 @@ def open_session(args):
 def configure(args):
     session = open_session(args)
     try:
-        modifier, key = args.shortcut
-        fields = {"modifiers": modifier, "key": key}
+        # Omit the shortcut unless it was given, so configuring Wi-Fi cannot
+        # silently replace the shortcut the device already uses.
+        fields = {}
+        if args.shortcut:
+            modifier, key = args.shortcut
+            fields.update(modifiers=modifier, key=key)
         token = None
         if args.wifi_ssid is not None:
             if not 1 <= len(args.wifi_ssid.encode()) <= 32:
@@ -111,18 +120,54 @@ def configure(args):
             save_token(args.token_file, token)
             fields.update(ssid=args.wifi_ssid, password=password, token=token)
         session.request("configure", **fields)
-        print("Configuration saved. Set the same shortcut in macOS.")
+        print("Configuration saved." + (" Set the same shortcut in macOS." if fields else ""))
         if token:
             print(f"Token saved at {args.token_file}. Stop the microphone, then press DOWN for Wi-Fi.")
     finally:
         session.link.close()
 
+@contextlib.contextmanager
+def graceful_termination():
+    """Turn SIGTERM and SIGHUP into KeyboardInterrupt, so cleanup blocks run.
+
+    Without this, a killed bridge would leave the system default input device
+    pointing at the microphone.
+    """
+    def interrupt(signum, frame):
+        raise KeyboardInterrupt
+    installed = {}
+    for name in ("SIGTERM", "SIGHUP"):
+        number = getattr(signal, name, None)
+        if number is None:
+            continue
+        try:
+            installed[number] = signal.signal(number, interrupt)
+        except ValueError:
+            pass  # Not the main thread; keep the default handlers.
+    try:
+        yield
+    finally:
+        for number, previous in installed.items():
+            signal.signal(number, previous)
+
 def run(args):
+    """Run the bridge. SIGTERM and SIGHUP run the same cleanup as Ctrl-C."""
+    with graceful_termination():
+        return _run(args)
+
+def _run(args):
     from .audio import AudioSink
     sink = AudioSink(args.output)
     session = None
+    switcher = InputSwitcher(args.mic_device) if args.mic_device else None
     try:
         sink.start()
+        injector = Injector()
+        if not trusted():
+            print("Warning: macOS does not trust this process for Accessibility, so the "
+                  "device cannot send the shortcut.", file=sys.stderr)
+            print(f"Allow the terminal application, or {sys.executable}, in System Settings > "
+                  "Privacy & Security > Accessibility.", file=sys.stderr)
         session = open_session(args)
         initial = session.request("status")
         expected = "usb" if args.serial else "wifi"
@@ -133,6 +178,7 @@ def run(args):
         heartbeat = time.monotonic()
         received = heartbeat
         latest = None
+        mic_active = False
         while True:
             for frame in session.receive():
                 received = time.monotonic()
@@ -140,13 +186,32 @@ def run(args):
                     sink.buffer.push(frame.sequence, frame.payload)
                 elif frame.kind == STATUS:
                     status = json.loads(frame.payload)
+                    if status.get("event") == "shortcut":
+                        if not trusted():
+                            print("Shortcut not sent: macOS does not trust this process for "
+                                  "Accessibility", file=sys.stderr, flush=True)
+                        else:
+                            try:
+                                injector.send(status.get("modifiers"), status.get("key"))
+                                print("Shortcut sent", flush=True)
+                            except (RuntimeError, ValueError) as error:
+                                print(f"Shortcut failed: {error}", file=sys.stderr, flush=True)
+                        continue
                     if (status.get("rate"), status.get("channels"), status.get("bits")) != (16000, 1, 16):
                         raise ValueError("Device audio format differs from the bridge format")
                     if status.get("transport") != expected:
                         raise ConnectionError("Device changed audio transport")
                     if not status.get("audio"):
                         sink.buffer.clear()
-                    brief = {k: status.get(k) for k in ("mic", "audio", "bridge", "hid", "error", "drops")}
+                    if switcher and bool(status.get("mic")) != mic_active:
+                        mic_active = not mic_active
+                        try:
+                            if switcher.set(mic_active):
+                                print(f"Default input: {switcher.name}" if mic_active
+                                      else "Default input restored", flush=True)
+                        except RuntimeError as error:
+                            print(f"Default input unchanged: {error}", file=sys.stderr, flush=True)
+                    brief = {k: status.get(k) for k in ("mic", "audio", "bridge", "error", "drops")}
                     if brief != latest:
                         print(json.dumps(brief), flush=True)
                         latest = brief
@@ -159,6 +224,11 @@ def run(args):
                 session.send("ready", active=True)
                 heartbeat = now
     finally:
+        if switcher is not None:
+            try:
+                switcher.set(False)
+            except Exception:
+                pass
         if session:
             try:
                 session.send("ready", active=False)
@@ -172,11 +242,18 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("devices", help="List audio outputs")
+    commands.add_parser("inputs", help="List audio inputs; the system default is marked")
     commands.add_parser("ports", help="List serial ports without opening them")
+    mic = commands.add_parser("microphone",
+        help="Report the aggregate input device that the voice input method records from")
+    mic.add_argument("--create", action="store_true", help="Create the device when it is missing")
+    mic.add_argument("--name", default=microphone.DEFAULT_NAME)
+    mic.add_argument("--subdevice", default=microphone.SUBDEVICE)
     config = commands.add_parser("configure", help="Save shortcut and optional Wi-Fi credentials over USB")
     config.add_argument("--serial", required=True)
     config.add_argument("--wifi-ssid")
-    config.add_argument("--shortcut", type=shortcut, default=shortcut("ctrl+alt+space"))
+    config.add_argument("--shortcut", type=shortcut,
+        help="Shortcut the device asks the bridge to press; the device keeps its current shortcut when omitted")
     config.add_argument("--token-file", type=Path, default=DEFAULT_TOKEN)
     config.set_defaults(host=None)
     bridge = commands.add_parser("run", help="Receive audio and play it into the selected virtual output")
@@ -184,16 +261,33 @@ def main(argv=None):
     transport.add_argument("--serial")
     transport.add_argument("--host")
     bridge.add_argument("--output", default="BlackHole 2ch")
+    bridge.add_argument("--mic-device", default="Passport Mic",
+        help="Input device to select while the microphone records; an empty value keeps the current default")
     bridge.add_argument("--token-file", type=Path, default=DEFAULT_TOKEN)
     args = parser.parse_args(argv)
     try:
         if args.command == "devices":
             import sounddevice as sd
             print(sd.query_devices())
+        elif args.command == "inputs":
+            import sounddevice as sd
+            hal = CoreAudio()
+            current = hal.name(hal.default_input())
+            for device in sd.query_devices():
+                if device["max_input_channels"]:
+                    print(f"{'*' if device['name'] == current else ' '} {device['name']}")
         elif args.command == "ports":
             from serial.tools import list_ports
             for port in list_ports.comports():
                 print(f"{port.device}: {port.description}")
+        elif args.command == "microphone":
+            hal = CoreAudio()
+            if args.create:
+                created = microphone.create(hal, microphone.AggregateHal(),
+                                            args.name, subdevice=args.subdevice)
+                print(f"Created {args.name} (device {created})")
+            for line in microphone.describe(hal, args.name, args.subdevice):
+                print(line)
         elif args.command == "configure":
             configure(args)
         else:

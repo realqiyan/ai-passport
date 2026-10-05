@@ -13,7 +13,6 @@
 #include "lwip/inet.h"
 #include "lwip/sockets.h"
 #include "nvs.h"
-#include "voice_hid.h"
 #include "voice_model.h"
 #include "voice_protocol.h"
 #include <errno.h>
@@ -178,12 +177,12 @@ static void status(bool wifi) {
     char json[512], ip[32];
     voice_ip(ip, sizeof(ip));
     int n = snprintf(json, sizeof(json),
-                     "{\"ack\":%lu,\"result\":\"%s\",\"mic\":%s,\"audio\":%s,\"bridge\":%s,\"hid\":"
-                     "%s,\"transport\":\"%s\",\"ip\":\"%s\",\"error\":%d,\"drops\":%lu,"
+                     "{\"ack\":%lu,\"result\":\"%s\",\"mic\":%s,\"audio\":%s,\"bridge\":%s,"
+                     "\"transport\":\"%s\",\"ip\":\"%s\",\"error\":%d,\"drops\":%lu,"
                      "\"modifiers\":%u,\"key\":%u,\"rate\":16000,\"channels\":1,\"bits\":16}",
                      (unsigned long)ack_sequence, result, voice_mic ? "true" : "false",
                      voice_audio ? "true" : "false", voice_bridge_ready() ? "true" : "false",
-                     voice_hid_ready() ? "true" : "false", voice_wifi_mode ? "wifi" : "usb", ip,
+                     voice_wifi_mode ? "wifi" : "usb", ip,
                      voice_error, (unsigned long)drops, voice_modifier(), voice_key());
     if (n > 0 && n < (int)sizeof(json) && !write_frame(wifi, VP_STATUS, 0, json, (size_t)n)) {
         if (wifi)
@@ -191,6 +190,25 @@ static void status(bool wifi) {
         else
             ready_usb = 0;
     }
+}
+/* Ask the bridge to press the saved shortcut on the host.
+   The event frame carries no acknowledgement field, so it can never be
+   mistaken for the reply to a command. */
+bool voice_trigger(void) {
+    bool wifi = voice_wifi_mode;
+    if (!voice_bridge_ready())
+        return false;
+    char json[80];
+    int n = snprintf(json, sizeof(json), "{\"event\":\"shortcut\",\"modifiers\":%u,\"key\":%u}",
+                     voice_modifier(), voice_key());
+    if (n <= 0 || n >= (int)sizeof(json) || !write_frame(wifi, VP_STATUS, 0, json, (size_t)n)) {
+        if (wifi)
+            close_client();
+        else
+            ready_usb = 0;
+        return false;
+    }
+    return true;
 }
 static const char *str(cJSON *obj, const char *name) {
     cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, name);
@@ -360,7 +378,12 @@ static void audio_task(void *arg) {
             continue;
         }
         if (!opened) {
-            esp_err_t err = bsp_audio_init();
+            /* sleep() leaves the codec in low power; without wake() the format
+               call below fails with ESP_ERR_INVALID_STATE and the microphone
+               cannot be enabled a second time. */
+            esp_err_t err = bsp_audio_wake();
+            if (err == ESP_OK)
+                err = bsp_audio_init();
             if (err == ESP_OK)
                 err = bsp_audio_set_format(16000, 16, 1);
             if (err != ESP_OK) {

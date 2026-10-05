@@ -6,6 +6,7 @@
 extern _Atomic bool voice_mic, voice_audio, voice_wifi_mode;
 extern _Atomic int voice_error;
 bool voice_bridge_ready(void);
+bool voice_trigger(void);
 uint8_t voice_modifier(void);
 uint8_t voice_key(void);
 void voice_ip(char *out, unsigned size);

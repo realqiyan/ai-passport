@@ -22,8 +22,7 @@ def main():
     sources = ROOT / "voice" / "firmware"
     files = {str(p.relative_to(sources)): p.read_bytes() for p in sources.rglob("*") if p.is_file()}
     defaults = subprocess.check_output(["git", "show", f"{BASELINE}:sdkconfig.defaults"], cwd=target).decode()
-    defaults = defaults.replace("CONFIG_BT_NIMBLE_NVS_PERSIST=n", "CONFIG_BT_NIMBLE_NVS_PERSIST=y")
-    defaults += "\n# Voice application\nCONFIG_LOG_DEFAULT_LEVEL_NONE=y\nCONFIG_LOG_MAXIMUM_LEVEL=0\nCONFIG_BT_NIMBLE_SM_SC=y\n"
+    defaults += "\n# Voice application\nCONFIG_LOG_DEFAULT_LEVEL_NONE=y\nCONFIG_LOG_MAXIMUM_LEVEL=0\n"
     files["sdkconfig.defaults"] = defaults.encode()
     gate = subprocess.check_output(["git", "show", f"{BASELINE}:tools/validate.sh"], cwd=target).decode()
     addition = '''    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \\
