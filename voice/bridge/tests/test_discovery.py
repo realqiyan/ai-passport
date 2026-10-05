@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from voice_bridge import discovery
-from voice_bridge.cli import open_session
+from voice_bridge.cli import configure, open_session
 
 
 class DiscoveryTests(unittest.TestCase):
@@ -108,3 +108,44 @@ class DiscoverySessionTests(unittest.TestCase):
                 open_session(self.args)
             link.return_value.close.assert_called_once()
         self.assertEqual(self.host_file.read_text(), "192.0.2.1\n")
+
+    def test_missing_token_stops_before_discovery_or_connection(self):
+        self.args.token_file.unlink()
+        for automatic in (True, False):
+            with self.subTest(automatic=automatic):
+                self.args.discover = automatic
+                self.args.host = None if automatic else "192.0.2.1"
+                with patch("voice_bridge.cli.discover_host") as find, patch(
+                        "voice_bridge.cli.TcpLink") as link:
+                    with self.assertRaisesRegex(RuntimeError, "configure.sh.*--wifi-ssid"):
+                        open_session(self.args)
+                    find.assert_not_called()
+                    link.assert_not_called()
+
+    def test_invalid_token_stops_before_discovery_or_connection(self):
+        self.args.token_file.write_text("invalid")
+        with patch("voice_bridge.cli.discover_host") as find, patch("voice_bridge.cli.TcpLink") as link:
+            with self.assertRaises(ValueError):
+                open_session(self.args)
+            find.assert_not_called()
+            link.assert_not_called()
+
+    def test_usb_configuration_replaces_missing_token_without_changing_shortcut(self):
+        self.args.token_file.unlink()
+        self.args.serial = "/dev/cu.test"
+        self.args.discover = False
+        self.args.wifi_ssid = "test-network"
+        self.args.shortcut = None
+        with patch("voice_bridge.cli.SerialLink"), patch("voice_bridge.cli.Session") as session, patch(
+                "voice_bridge.cli.getpass.getpass", return_value="test-password"):
+            configure(self.args)
+            saved = self.args.token_file.read_text().strip()
+            self.assertEqual(len(saved), 64)
+            self.assertEqual(self.args.token_file.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(session.return_value.request.call_args_list[0].args, ("hello",))
+            self.assertEqual(session.return_value.request.call_args_list[0].kwargs, {"token": ""})
+            request = session.return_value.request.call_args_list[1]
+            self.assertEqual(request.args, ("configure",))
+            self.assertEqual(request.kwargs,
+                             {"ssid": "test-network", "password": "test-password", "token": saved})
+            session.return_value.link.close.assert_called_once()

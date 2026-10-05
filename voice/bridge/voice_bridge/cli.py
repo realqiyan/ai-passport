@@ -72,7 +72,15 @@ class Session:
         raise TimeoutError(f"No acknowledgement for {op}")
 
 def read_token(path):
-    token = path.read_text().strip()
+    try:
+        token = path.read_text().strip()
+    except FileNotFoundError:
+        raise RuntimeError(
+            f"Wi-Fi token is missing: {path}. Connect the device by USB, stop the USB bridge, "
+            "turn the microphone off, then run configure.sh <serial> --wifi-ssid <network>. "
+            "This creates and saves the token on both the Mac and the device. "
+            "If you have the matching token elsewhere, use --token-file <path>."
+        ) from None
     if len(token) != 64 or any(c not in "0123456789abcdef" for c in token):
         raise ValueError("Token file must contain 64 hexadecimal characters")
     return token
@@ -90,6 +98,8 @@ def save_token(path, token):
         temporary.unlink(missing_ok=True)
 
 def open_session(args):
+    # Check local credentials before discovery or opening the device connection.
+    token = "" if args.serial else read_token(args.token_file)
     if getattr(args, "discover", False):
         try:
             args.host = discover_host()
@@ -102,7 +112,6 @@ def open_session(args):
     link = SerialLink(args.serial) if args.serial else TcpLink(args.host)
     session = Session(link)
     try:
-        token = read_token(args.token_file) if args.host else ""
         session.request("hello", token=token)
         if getattr(args, "discover", False):
             args.host_file.parent.mkdir(parents=True, exist_ok=True)
