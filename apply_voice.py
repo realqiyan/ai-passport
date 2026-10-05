@@ -23,7 +23,12 @@ def main():
     files = {str(p.relative_to(sources)): p.read_bytes() for p in sources.rglob("*") if p.is_file()}
     defaults = subprocess.check_output(["git", "show", f"{BASELINE}:sdkconfig.defaults"], cwd=target).decode()
     defaults += "\n# Voice application\nCONFIG_LOG_DEFAULT_LEVEL_NONE=y\nCONFIG_LOG_MAXIMUM_LEVEL=0\n"
+    defaults += "CONFIG_PM_ENABLE=y\n"
     files["sdkconfig.defaults"] = defaults.encode()
+    display = subprocess.check_output(
+        ["git", "show", f"{BASELINE}:components/bsp/src/bsp_display.c"], cwd=target).decode()
+    files["components/bsp/src/bsp_display.c"] = display.replace(
+        "LEDC_AUTO_CLK", "LEDC_USE_XTAL_CLK").encode()
     gate = subprocess.check_output(["git", "show", f"{BASELINE}:tools/validate.sh"], cwd=target).decode()
     addition = '''    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \\
         tests/test_voice_protocol.c main/voice_protocol.c main/voice_model.c \\
@@ -35,6 +40,23 @@ def main():
                         'mktemp -d "${TMPDIR:-/tmp}/ai-passport-firmware.XXXXXX"')
     gate = gate.replace('in /tmp/ai-passport-firmware.*)',
                         'in "${TMPDIR:-/tmp}"/ai-passport-firmware.*)')
+    gate = gate.replace('"${CC:-cc}"', 'host_cc')
+    marker = 'set -euo pipefail'
+    wrapper = """
+# Darwin ld uses dead_strip instead of GNU gc-sections.
+host_cc() {
+    local args=() arg
+    for arg in "$@"; do
+        if [ "$(uname -s)" = Darwin ] && [ "$arg" = '-Wl,--gc-sections' ]; then
+            args+=("-Wl,-dead_strip")
+        else
+            args+=("$arg")
+        fi
+    done
+    "${CC:-cc}" "${args[@]}"
+}
+"""
+    gate = gate.replace(marker, marker + "\n" + wrapper)
     files["tools/validate.sh"] = gate.encode()
     state = target / ".voice-applied.json"
     previous = json.loads(state.read_text()) if state.exists() else {}

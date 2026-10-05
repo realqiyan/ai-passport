@@ -36,17 +36,24 @@ class CoreAudio:
         self.ca.AudioObjectSetPropertyData.argtypes = [
             ctypes.c_uint32, ctypes.POINTER(Address), ctypes.c_uint32, ctypes.c_void_p,
             ctypes.c_uint32, ctypes.c_void_p]
+        self.cf.CFRelease.argtypes = [ctypes.c_void_p]
+        self.cf.CFRelease.restype = None
+        self.cf.CFStringGetCString.restype = ctypes.c_bool
         self.cf.CFStringGetCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p,
                                                ctypes.c_long, ctypes.c_uint32]
 
     def devices(self):
         address = Address(selector("dev#"), GLOBAL, MAIN)
         size = ctypes.c_uint32(0)
-        self.ca.AudioObjectGetPropertyDataSize(SYSTEM, ctypes.byref(address), 0, None,
-                                               ctypes.byref(size))
+        status = self.ca.AudioObjectGetPropertyDataSize(SYSTEM, ctypes.byref(address), 0, None,
+                                                        ctypes.byref(size))
+        if status:
+            raise RuntimeError(f"Cannot enumerate audio devices (status {status})")
         found = (ctypes.c_uint32 * (size.value // 4))()
-        self.ca.AudioObjectGetPropertyData(SYSTEM, ctypes.byref(address), 0, None,
-                                           ctypes.byref(size), found)
+        status = self.ca.AudioObjectGetPropertyData(SYSTEM, ctypes.byref(address), 0, None,
+                                                    ctypes.byref(size), found)
+        if status:
+            raise RuntimeError(f"Cannot read audio devices (status {status})")
         return list(found)
 
     def string(self, device, fourcc):
@@ -58,9 +65,14 @@ class CoreAudio:
                                               ctypes.byref(size), ctypes.byref(text)):
             return None
         buffer = ctypes.create_string_buffer(512)
-        if not text.value or not self.cf.CFStringGetCString(text, buffer, 512, UTF8):
+        if not text.value:
             return None
-        return buffer.value.decode("utf-8", "replace")
+        try:
+            if not self.cf.CFStringGetCString(text, buffer, 512, UTF8):
+                return None
+            return buffer.value.decode("utf-8", "replace")
+        finally:
+            self.cf.CFRelease(text)
 
     def name(self, device):
         return self.string(device, "lnam")
@@ -73,8 +85,10 @@ class CoreAudio:
         address = Address(selector("dIn "), GLOBAL, MAIN)
         size = ctypes.c_uint32(4)
         value = ctypes.c_uint32(0)
-        self.ca.AudioObjectGetPropertyData(SYSTEM, ctypes.byref(address), 0, None,
-                                           ctypes.byref(size), ctypes.byref(value))
+        status = self.ca.AudioObjectGetPropertyData(SYSTEM, ctypes.byref(address), 0, None,
+                                                    ctypes.byref(size), ctypes.byref(value))
+        if status:
+            raise RuntimeError(f"Cannot read the default input (status {status})")
         return value.value
 
     def set_default_input(self, device):
@@ -85,15 +99,13 @@ class CoreAudio:
 
     def find(self, wanted):
         """Return the identifier of the input device named `wanted`, if any."""
-        names = {}
-        for device in self.devices():
-            title = self.name(device)
-            if title:
-                names.setdefault(title, device)
-        if wanted in names:
-            return names[wanted]
-        folded = [device for title, device in names.items() if title.casefold() == wanted.casefold()]
-        return folded[0] if len(folded) == 1 else None
+        named = [(self.name(device), device) for device in self.devices()]
+        exact = [device for title, device in named if title == wanted]
+        matches = exact or [device for title, device in named
+                            if title and title.casefold() == wanted.casefold()]
+        if len(matches) > 1:
+            raise RuntimeError(f"More than one audio device is named {wanted!r}")
+        return matches[0] if matches else None
 
 class InputSwitcher:
     """Point the default input at one device while a recording session is active."""
@@ -102,6 +114,7 @@ class InputSwitcher:
         self.name = name
         self.hal = CoreAudio() if hal is None else hal
         self.saved = None
+        self.selected = None
 
     def set(self, active):
         """Select the named device, or restore the device saved by `set(True)`.
@@ -117,10 +130,21 @@ class InputSwitcher:
                 return False
             if self.saved is None:
                 self.saved = current
-            return self.hal.set_default_input(device)
+            if not self.hal.set_default_input(device):
+                raise RuntimeError("Cannot select the recording input")
+            self.selected = device
+            return True
         if self.saved is None:
             return False
-        saved, self.saved = self.saved, None
-        if saved == self.hal.default_input():
+        saved = self.saved
+        current = self.hal.default_input()
+        # Keep a new default chosen by the user or another application.
+        if current != self.selected or current == saved:
+            self.saved = None
+            self.selected = None
             return False
-        return self.hal.set_default_input(saved)
+        if not self.hal.set_default_input(saved):
+            raise RuntimeError("Cannot restore the previous input")
+        self.saved = None
+        self.selected = None
+        return True

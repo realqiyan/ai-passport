@@ -40,6 +40,10 @@ int main(void) {
     assert(vp_encode(frame, 1, 0, "", VP_MAX_PAYLOAD + 1) == 0);
     assert(voice_shortcut_valid(5, 0x2c));
     assert(!voice_shortcut_valid(256, 4));
+    assert(!voice_shortcut_valid(16, 4));
+    assert(!voice_shortcut_valid(0, 30));
+    assert(voice_shortcut_valid(15, 0x45));
+    assert(!voice_shortcut_valid(0, 0x46));
     assert(!voice_shortcut_valid(0, 0));
     for (int a = 0; a < 2; a++)
         for (int b = 0; b < 2; b++)
@@ -59,5 +63,12 @@ int main(void) {
     assert(!voice_ready_fresh(3001, 1));
     assert(!voice_ready_fresh(1, 0));
     assert(voice_ready_fresh(5, 0xfffffff0u));
-    puts("Voice protocol and trigger tests: PASS");
+    assert(!voice_should_blank(29999999, 0, false, false, true));
+    assert(voice_should_blank(30000000, 0, false, false, true));
+    assert(!voice_should_blank(30000000, 1, false, false, true));
+    assert(!voice_should_blank(30000000, 0, true, false, true));
+    assert(!voice_should_blank(30000000, 0, false, true, true));
+    assert(!voice_should_blank(30000000, 0, false, false, false));
+    assert(!voice_should_blank(0, 1, false, false, true));
+    puts("Voice protocol, trigger and idle tests: PASS");
 }

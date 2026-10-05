@@ -48,7 +48,7 @@ def hal(with_mic=True):
     names = {"BlackHole 2ch": 102, "MacBook Pro麦克风": 97}
     if with_mic:
         names["Passport Mic"] = 120
-    return FakeHal(names, {102: "BlackHole2ch_UID"}, 97)
+    return FakeHal(names, {102: "BlackHole2ch_UID", 120: microphone.DEFAULT_UID}, 97)
 
 class DescriptionTests(unittest.TestCase):
     def test_description_matches_the_coreaudio_key_names(self):
@@ -113,6 +113,12 @@ class RemoveTests(unittest.TestCase):
         aggregates = FakeAggregates()
         with self.assertRaisesRegex(RuntimeError, "default input"):
             microphone.remove(FakeHal({"Passport Mic": 120}, default=120), aggregates)
+        self.assertEqual(aggregates.destroyed, [])
+
+    def test_refuses_to_remove_an_unrelated_device_with_the_same_name(self):
+        aggregates = FakeAggregates()
+        with self.assertRaisesRegex(RuntimeError, "different UID"):
+            microphone.remove(FakeHal({"Passport Mic": 120}, {120: "other"}), aggregates)
         self.assertEqual(aggregates.destroyed, [])
 
     def test_missing_device_reports_an_error(self):

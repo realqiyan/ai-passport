@@ -74,8 +74,20 @@ class AudioSink:
         outdata[:] = self.buffer.read(frames * 4)
 
     def start(self):
-        self.stream.start()
+        self.set_active(True)
+
+    def set_active(self, active):
+        if active:
+            if not self.stream.active:
+                self.buffer.clear()
+                self.stream.start()
+        else:
+            if self.stream.active:
+                self.stream.stop()
+            self.buffer.clear()
 
     def close(self):
-        self.stream.stop()
-        self.stream.close()
+        try:
+            self.set_active(False)
+        finally:
+            self.stream.close()

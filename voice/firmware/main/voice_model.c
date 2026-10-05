@@ -1,6 +1,8 @@
 #include "voice_model.h"
 bool voice_shortcut_valid(int modifiers, int key) {
-    return modifiers >= 0 && modifiers <= 255 && key >= 4 && key <= 0x73;
+    return modifiers >= 0 && modifiers <= 15 &&
+           ((key >= 4 && key <= 29) || key == 0x28 || key == 0x29 ||
+            key == 0x2b || key == 0x2c || (key >= 0x3a && key <= 0x45));
 }
 bool voice_can_trigger(bool audio, bool bridge) {
     return audio && bridge;
@@ -49,4 +51,10 @@ bool voice_password_valid(const char *password) {
 
 bool voice_ready_fresh(uint32_t now_ms, uint32_t last_ms) {
     return last_ms != 0 && (uint32_t)(now_ms - last_ms) < 3000;
+}
+
+bool voice_should_blank(int64_t now_us, int64_t last_input_us,
+                        bool mic, bool audio, bool buttons_ok) {
+    return buttons_ok && !mic && !audio && now_us >= last_input_us &&
+           now_us - last_input_us >= INT64_C(30000000);
 }

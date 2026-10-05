@@ -15,21 +15,26 @@ step() { printf '\n== %s\n' "$1"; }
 note() { printf '   %s\n' "$1"; }
 die() { printf '\ninstall.sh: %s\n' "$1" >&2; exit 1; }
 
+[ $# -eq 0 ] || die "用法：install.sh（不接受桥接选项）"
 step "检查环境"
 [ "$(uname -s)" = "Darwin" ] || die "此桥接程序只在 macOS 上运行。"
-command -v python3 >/dev/null 2>&1 || die "缺少 python3。安装 Python 3.10 或更新版本后重试。"
-python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' \
+python_bin="${PYTHON:-python3}"
+command -v "$python_bin" >/dev/null 2>&1 || die "缺少 python3。安装 Python 3.10 或更新版本后重试。"
+"$python_bin" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' \
     || die "需要 Python 3.10 或更新版本。"
-note "$(python3 -V)"
+note "$("$python_bin" -V)"
 
 step "安装桥接程序"
 if [ ! -x "$venv/bin/python" ]; then
-    python3 -m venv "$venv"
+    "$python_bin" -m venv "$venv"
     note "已创建虚拟环境 $venv"
 fi
+"$venv/bin/python" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' \
+    || die "现有虚拟环境不可用。迁移时不要复制 .venv；请在新 Mac 重建。"
 "$venv/bin/python" -m pip install --quiet --upgrade pip
 "$venv/bin/python" -m pip install --quiet -e "$bridge"
-note "$("$voice" --help >/dev/null 2>&1 && echo 'passport-voice 命令可用')"
+"$voice" --help >/dev/null || die "桥接命令不可用。迁移时不要复制 .venv；请在新 Mac 重建。"
+note "passport-voice 命令可用"
 
 step "检查 BlackHole 2ch"
 if [ ! -e "$driver" ]; then
@@ -44,7 +49,8 @@ fi
 note "BlackHole 2ch 已加载"
 
 step "准备聚合输入设备"
-if "$voice" microphone | grep -q '^Passport Mic: present'; then
+report="$("$voice" microphone)" || die "无法读取聚合设备状态。"
+if printf '%s\n' "$report" | grep -q '^Passport Mic: present'; then
     note "Passport Mic 已存在，未改动"
 else
     "$voice" microphone --create

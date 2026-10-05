@@ -159,9 +159,9 @@ def _run(args):
     from .audio import AudioSink
     sink = AudioSink(args.output)
     session = None
-    switcher = InputSwitcher(args.mic_device) if args.mic_device else None
+    switcher = None
     try:
-        sink.start()
+        switcher = InputSwitcher(args.mic_device) if args.mic_device else None
         injector = Injector()
         if not trusted():
             print("Warning: macOS does not trust this process for Accessibility, so the "
@@ -174,41 +174,55 @@ def _run(args):
         if initial.get("transport") != expected:
             raise RuntimeError(f"Select {expected} on the device with DOWN before running the bridge")
         session.request("ready", active=True)
-        print("Audio output ready. Press UP to enable the microphone, then OK for the shortcut.")
+        print("Audio output ready. Press OK for temporary input, then OK again to stop. UP keeps the microphone on.")
         heartbeat = time.monotonic()
         received = heartbeat
         latest = None
         mic_active = False
+        temporary_session = None
         while True:
             for frame in session.receive():
                 received = time.monotonic()
                 if frame.kind == PCM:
+                    sink.set_active(True)
                     sink.buffer.push(frame.sequence, frame.payload)
                 elif frame.kind == STATUS:
                     status = json.loads(frame.payload)
                     if status.get("event") == "shortcut":
-                        if not trusted():
-                            print("Shortcut not sent: macOS does not trust this process for "
-                                  "Accessibility", file=sys.stderr, flush=True)
-                        else:
-                            try:
-                                injector.send(status.get("modifiers"), status.get("key"))
-                                print("Shortcut sent", flush=True)
-                            except (RuntimeError, ValueError) as error:
-                                print(f"Shortcut failed: {error}", file=sys.stderr, flush=True)
+                        if status.get("temporary") and status.get("ending"):
+                            if temporary_session != status.get("session"):
+                                continue
+                            temporary_session = None
+                        try:
+                            if not trusted():
+                                raise RuntimeError("macOS does not trust this process for Accessibility")
+                            if switcher and not status.get("ending"):
+                                if switcher.set(True):
+                                    print(f"Default input: {switcher.name}", flush=True)
+                                mic_active = True
+                            modifiers, key = getattr(args, "shortcut", None) or (
+                                status.get("modifiers"), status.get("key"))
+                            injector.send(modifiers, key)
+                            if status.get("temporary") and not status.get("ending"):
+                                temporary_session = status.get("session")
+                            print("Shortcut sent", flush=True)
+                        except (RuntimeError, ValueError) as error:
+                            print(f"Shortcut not sent: {error}", file=sys.stderr, flush=True)
+                            if status.get("temporary") and not status.get("ending"):
+                                session.send("stop", session=status.get("session"))
                         continue
                     if (status.get("rate"), status.get("channels"), status.get("bits")) != (16000, 1, 16):
                         raise ValueError("Device audio format differs from the bridge format")
                     if status.get("transport") != expected:
                         raise ConnectionError("Device changed audio transport")
-                    if not status.get("audio"):
-                        sink.buffer.clear()
+                    sink.set_active(bool(status.get("audio")))
                     if switcher and bool(status.get("mic")) != mic_active:
-                        mic_active = not mic_active
+                        desired = bool(status.get("mic"))
                         try:
-                            if switcher.set(mic_active):
-                                print(f"Default input: {switcher.name}" if mic_active
+                            if switcher.set(desired):
+                                print(f"Default input: {switcher.name}" if desired
                                       else "Default input restored", flush=True)
+                            mic_active = desired
                         except RuntimeError as error:
                             print(f"Default input unchanged: {error}", file=sys.stderr, flush=True)
                     brief = {k: status.get(k) for k in ("mic", "audio", "bridge", "error", "drops")}
@@ -218,7 +232,7 @@ def _run(args):
             now = time.monotonic()
             if now - received > 3:
                 raise TimeoutError("No device frames for 3 seconds")
-            if not sink.stream.active:
+            if latest and latest.get("audio") and not sink.stream.active:
                 raise RuntimeError("Audio output stopped")
             if now - heartbeat >= 1:
                 session.send("ready", active=True)
@@ -227,16 +241,18 @@ def _run(args):
         if switcher is not None:
             try:
                 switcher.set(False)
-            except Exception:
-                pass
-        if session:
-            try:
-                session.send("ready", active=False)
-            except Exception:
-                pass
-            session.link.close()
-        sink.buffer.clear()
-        sink.close()
+            except Exception as error:
+                print(f"Default input restore failed: {error}", file=sys.stderr)
+        try:
+            if session:
+                try:
+                    session.send("ready", active=False)
+                except Exception:
+                    pass
+                session.link.close()
+        finally:
+            sink.buffer.clear()
+            sink.close()
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
@@ -260,6 +276,8 @@ def main(argv=None):
     transport = bridge.add_mutually_exclusive_group(required=True)
     transport.add_argument("--serial")
     transport.add_argument("--host")
+    bridge.add_argument("--shortcut", type=shortcut,
+        help="Override the device shortcut for this run; configure saves a shortcut on the device")
     bridge.add_argument("--output", default="BlackHole 2ch")
     bridge.add_argument("--mic-device", default="Passport Mic",
         help="Input device to select while the microphone records; an empty value keeps the current default")

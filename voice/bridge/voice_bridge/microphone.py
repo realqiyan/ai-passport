@@ -68,7 +68,7 @@ def create(hal, aggregates, name=DEFAULT_NAME, uid=DEFAULT_UID, subdevice=SUBDEV
     device = hal.find(subdevice)
     if device is None:
         raise RuntimeError(f"No audio device is named {subdevice!r}; "
-                           "install it with: brew install blackhole-2ch")
+                           "install it with: brew install --cask blackhole-2ch")
     subdevice_uid = hal.uid(device)
     if not subdevice_uid:
         raise RuntimeError(f"Cannot read the device identifier of {subdevice!r}")
@@ -86,4 +86,6 @@ def remove(hal, aggregates, name=DEFAULT_NAME):
     if device == hal.default_input():
         raise RuntimeError(f"{name} is the system default input; "
                            "select another input device before removing it")
+    if hal.uid(device) != DEFAULT_UID:
+        raise RuntimeError(f"{name} has a different UID; refusing to remove an unrelated device")
     aggregates.destroy(device)

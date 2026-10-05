@@ -4,6 +4,8 @@
 
 **2026-10-05 设计变更**：原设计的 BLE 键盘投递不可用。macOS 从未把 `Passport Voice` 挂载成 HID 键盘，蓝牙设置里也没有连接入口。快捷键改由桥接程序注入；设备只发送一条 `{"event":"shortcut","modifiers":N,"key":N}` 请求，不参与按键合成。BLE HID 代码已从固件移除，设备不再初始化蓝牙。
 
+2026-10-05 当前版本：支持确认键临时输入、再次确认结束并关麦，以及保存或临时覆盖快捷键。完整固件门禁通过；桥接测试 51 项中 49 项通过、2 项因 Linux 缺少 macOS 框架跳过，脚本与刷机测试 21 项通过。本轮未刷写设备。省电规则、迁移步骤及未验证边界见下文和 [审查记录](REVIEW.md)。
+
 当前版本是独立应用，固件启动进入语音页面。设备重启后麦克风关闭，音频传输默认为 USB。时钟源码保留在相邻 `clock/` 目录。
 
 ## 快速开始
@@ -11,6 +13,13 @@
 ```bash
 # 一次性安装（可重复运行）
 projects/ai-passport/voice/install.sh
+
+# 首次安装或升级设备固件：先构建，命令见“固件安装”
+# 激活 ESP-IDF 后，只写应用分区
+projects/ai-passport/voice/flash.sh <串口> <归档目录>/FoloToy-AI-Passport.bin
+
+# 可选：保存与输入法相同的快捷键。先停止 USB 桥接。
+projects/ai-passport/voice/configure.sh <串口> --shortcut ctrl+shift+v
 
 # 每次使用，二选一
 projects/ai-passport/voice/start.sh usb       # 有线
@@ -31,9 +40,11 @@ projects/ai-passport/voice/start.sh wifi      # 无线，沿用上次记住的 I
 | `install.sh` | 安装或更新 Mac 侧。只写自己目录内的文件和聚合设备 |
 | `start.sh usb [串口]` | 有线链路。串口省略时使用唯一的 `/dev/cu.usbmodem*` |
 | `start.sh wifi [IP]` | 无线链路。IP 省略时沿用上次的值，记在 `voice/.local/host` |
+| `configure.sh [串口] --shortcut <组合键>` | 保存设备快捷键；可同时设置 Wi-Fi |
+| `flash.sh <串口> <应用镜像>` | 检查设备分区，只刷应用并回读校验 |
 | `uninstall.sh` | 卸载 Mac 侧，即 `install.sh` 的逆操作 |
 
-三个脚本都把多余参数原样转给 `passport-voice run`，例如 `start.sh usb --output 'BlackHole 2ch'`。`start.sh` 在前台运行，用 `Ctrl+C` 停止；退出时会还原系统默认输入设备。
+只有 `start.sh` 把额外参数原样转给 `passport-voice run`，例如 `start.sh usb --output 'BlackHole 2ch'`。`start.sh` 在前台运行，用 `Ctrl+C` 停止；退出时会还原系统默认输入设备。
 
 脚本按自身所在目录解析路径，可以在任何工作目录下调用。
 
@@ -46,7 +57,7 @@ projects/ai-passport/voice/uninstall.sh --yes    # 跳过确认
 
 它会停止桥接、删除聚合设备 `Passport Mic`、删除 Wi-Fi 令牌与 `.local`、删除虚拟环境和构建残留。
 
-**系统默认输入仍是 `Passport Mic` 时它会拒绝执行**，因为此时删除会让输入法失去麦克风。先在“系统设置 → 声音 → 输入”里选别的设备再运行。
+脚本只停止本目录安装的桥接。桥接退出后重新检查默认输入；仍为 `Passport Mic` 时拒绝删除。其他目录的桥接仍在运行时也拒绝删除共享聚合设备。音频状态读取失败时停止卸载。
 
 以下项目不会被改动，脚本会给出提示：
 
@@ -55,25 +66,55 @@ projects/ai-passport/voice/uninstall.sh --yes    # 跳过确认
 | BlackHole 2ch | 可能被其他程序共用；卸载命令为 `brew uninstall --cask blackhole-2ch` |
 | 辅助功能授权 | 需要手动在“隐私与安全性”里移除 |
 | 输入法的麦克风选择 | 需要手动改回 |
-| 设备固件与 NVS | 设备仍保存 Wi-Fi 配置和令牌；要清干净需刷回时钟应用或擦除 NVS |
+| 设备固件与 NVS | 设备仍保存 Wi-Fi 配置和令牌；刷回时钟应用仍保留 `voice_v1` 配置；清除配置需另行擦除对应 NVS 数据 |
+
+## 自动省电
+
+本次代码默认启用，无需额外开关：
+
+- 设备 CPU 动态频率范围为 40–160 MHz。录音期间持有 160 MHz 锁；关麦后释放，实际频率由 ESP-IDF 和外设锁决定。
+- 关麦后，传输任务轮询从 2 ms 改为 20 ms；音频任务的空闲检查从 20 ms 改为 100 ms。
+- 麦克风关闭且 30 秒没有按键时，关闭背光并停止 LVGL 定时器。按键唤醒后仍执行该键原动作。开麦或采集期间保持亮屏。按键初始化失败时不熄屏。
+- Mac 桥接在无音频状态下停止输出流，清除旧缓冲；收到音频时自动恢复。空闲链路读取最多阻塞 500 ms，连接和每秒心跳保留。
+
+设备不进入 Light-sleep 或 Deep-sleep。USB Serial/JTAG 在睡眠期间无法工作，现阶段优先保留随时开麦的连接。[Espressif USB 睡眠说明](https://docs.espressif.com/projects/esp-idf/en/v5.2-rc1/esp32c3/api-guides/usb-serial-jtag-console.html)。实际节电幅度和首次开麦延迟需实机测量。
+
+## 迁移到其他 Mac
+
+源码和脚本按自身目录寻址，没有 `/Users/<用户名>`、Homebrew 安装前缀或固定设备号依赖。安装与启动的路径测试已覆盖空格和方括号。兼容目标为 Apple Silicon 与 Intel Mac；本次没有在新 Mac 实测，不能据此承诺所有 macOS 版本。
+
+1. 复制源码目录，排除 `bridge/.venv`、`*.egg-info` 和 `__pycache__`。虚拟环境含机器路径和本机依赖，必须在目标 Mac 重建。
+2. 安装 Python 3.10 或更新版本。可用 Python 官方的 [universal2 安装包](https://www.python.org/downloads/macos/)。需要指定解释器时运行 `PYTHON=/路径/python3 ./install.sh`。
+3. 安装 BlackHole 2ch：`brew install --cask blackhole-2ch`。没有 Homebrew 时先安装它，或使用 BlackHole 官方安装包。确认系统已经加载驱动，再运行 `./install.sh`。
+4. 在目标 Mac 重新授权辅助功能，并把输入法麦克风设为 `Passport Mic`。权限不会随源码迁移。
+5. USB 串口自动枚举。Wi-Fi 地址要按新网络重新指定。继续连接同一设备时，可安全转移 `.local/token` 并保留 `0600` 权限；否则经 USB 重新运行 `configure`。
+
+卸载只删除本目录的环境和本地状态，以及 UID 为 `com.ai-passport.aggregate.mic` 的聚合设备。BlackHole、系统权限和设备 NVS 需要分别处理。通过 `python -m voice_bridge.cli run` 自行启动的进程需先手动停止；脚本按绝对 CLI 路径识别它启动的桥接。
+
+审查依据、修复和验证边界见 [稳定性与迁移审查](REVIEW.md)。
 
 ## 每次使用的流程
 
 1. 启动桥接：`start.sh usb` 或 `start.sh wifi`。等它打印 `Audio output ready`。
 2. 把光标放进要输入文字的输入框。
-3. 设备按**上键**开麦。屏幕显示 `MIC STREAMING`，桥接打印 `Default input: Passport Mic`。
-4. 设备按**确定**，输入法开始听写，然后说话。
-5. 设备按上键关麦，桥接打印 `Default input restored`。
-6. 在终端按 `Ctrl+C` 停止桥接。
+3. 麦克风关闭时按**确定**，设备临时开麦。音频采集就绪后，桥接选择 `Passport Mic` 并发送输入快捷键。
+4. 说话。输入完成后再次按**确定**，桥接发送同一个快捷键结束输入，设备关闭麦克风，Mac 还原默认输入。
+5. 在终端按 `Ctrl+C` 停止桥接。
 
-结束听写的方法按所用输入法设置；本版本没有实现“按住说话、松开结束”。设备屏幕的 `Shortcut sent` 只表示请求已交给桥接程序，不证明按键已注入，也不证明输入法开始听写。真正的成功标志是桥接程序打印 `Shortcut sent`。
+这里采用用户确认的“再次确认结束”，不根据静音自动结束。输入法中的快捷键应设置为开始/结束切换；设备不能读取识别完成状态，也不能确认输入法是否接受了结束快捷键。
+
+如果需要连续输入，用**上键**持续开麦，按确定发送快捷键，用上键关麦。上键关麦只关闭音频，不额外触发输入法快捷键。
+
+临时开麦等待采集最长 3 秒。启动失败、桥接断开或快捷键注入失败时自动关麦。快速再次确认可取消尚未开始的临时输入。旧会话的结束请求不会关闭或触发新会话。
+
+设备屏幕提示表示请求已入队。实际快捷键注入以 Mac 的 `Shortcut sent` 为准。
 
 ## 设备操作
 
 | 操作 | 行为 |
 | --- | --- |
 | 上键单击 | 开启或关闭麦克风。电脑桥接未就绪时拒绝开启 |
-| 确定单击 | 在麦克风采集和电脑桥接就绪时，请桥接程序注入一次快捷键 |
+| 确定单击 | 关麦时开始临时输入；临时输入时结束并关麦；持续开麦时发送快捷键 |
 | 下键单击 | 麦克风关闭时切换 USB 与 Wi-Fi |
 
 固件不再有蓝牙配对、数字比较确认和清除绑定，确定键长按不再有动作。macOS 蓝牙列表里若还留着一个 `Passport Voice`，那是系统缓存的历史条目，可以在蓝牙设置里移除；设备已不再广播。
@@ -91,7 +132,21 @@ projects/ai-passport/voice/uninstall.sh --yes    # 跳过确认
 | 桥接注入 | 辅助功能已授权 | 桥接打印 `Shortcut not sent` |
 | 输入法取音频 | 默认输入为 `Passport Mic` | 桥接打印 `Default input: Passport Mic` |
 
-默认快捷键为 `Control + Shift + V`。它是首版实现的默认值，用户可以改变。Fn 的外接键盘兼容性尚未实现，首版采用普通组合键。
+首次启动默认快捷键为 `Control + Shift + V`。已有 NVS 中保存的快捷键继续生效。
+
+保存快捷键到设备，重启后仍有效；修改前先停止 USB 桥接并关麦：
+
+```bash
+projects/ai-passport/voice/configure.sh <串口> --shortcut ctrl+shift+v
+```
+
+串口省略时自动选择唯一的 `/dev/cu.usbmodem*`。也可仅对本次运行覆盖，支持 USB 与 Wi-Fi：
+
+```bash
+projects/ai-passport/voice/start.sh wifi <IP> --shortcut ctrl+alt+space
+```
+
+开始和结束使用同一组合键。支持 `ctrl`、`shift`、`alt`、`cmd`，以及字母、`space`、`enter`、`escape`、`tab`、`f1`–`f12`。Fn 尚未支持。输入法快捷键需与这里一致；程序不会改写输入法设置。
 
 ## 安装细节
 
@@ -119,7 +174,7 @@ Chatterfly 跟随**系统默认输入设备**，不保存自己选中的设备�
 | 设备状态 | 桥接程序动作 |
 | --- | --- |
 | 上键开麦（`mic` 变为 true） | 把默认输入设备切到 `Passport Mic` |
-| 关麦、拔线或桥接退出 | 还原为切换前的设备 |
+| 关麦、拔线或桥接退出 | 默认输入仍由桥接控制时，还原为切换前的设备 |
 
 副作用只在录音期间存在：平时默认输入仍是电脑自带麦克风，视频会议等程序不受影响。`SIGTERM`、`SIGHUP` 和 `Ctrl+C` 都走同一套还原逻辑，实测退出码 0。用 `--mic-device` 换设备名，传空字符串则完全不改默认输入。
 
@@ -183,7 +238,8 @@ Mac 程序连接设备的 TCP `8765` 端口，网络必须允许同一局域网�
 
 | 路径 | 用途 |
 | --- | --- |
-| `install.sh`、`start.sh`、`uninstall.sh` | Mac 侧安装、启动与卸载入口 |
+| `install.sh`、`start.sh`、`configure.sh`、`uninstall.sh` | Mac 侧安装、启动、配置与卸载入口 |
+| `flash.sh`、`flash_firmware.py` | 设备应用分区检查、刷写和校验 |
 | `firmware/main/main.c` | 独立语音页面、按键和状态显示 |
 | `firmware/main/voice_runtime.c` | 分块录音、USB/Wi-Fi、配置保存、心跳和快捷键请求 |
 | `firmware/main/voice_protocol.c` | 有长度限制和 CRC32 的帧协议 |
@@ -204,22 +260,47 @@ python3 projects/ai-passport/apply_voice.py
 
 工作树已存在时跳过 `worktree add`。应用脚本只接受该官方基线，遇到目标文件被单独修改时停止，避免覆盖修改。
 
-在已配置 ESP-IDF 5.5.3 的 Bash 会话中运行。macOS 上两处环境必须显式给出，否则门禁会以 `idf.py is not available` 或 `ld: unknown options: --gc-sections` 失败：
+在已配置 ESP-IDF 5.5.3 的 Bash 会话中运行。需先激活项目内的 ESP-IDF 环境。恢复后的门禁会自动处理 macOS 链接器参数：
 
 ```bash
 export IDF_TOOLS_PATH="$PWD/projects/ai-passport/.tools/espressif"
 source projects/ai-passport/.tools/esp-idf/export.sh
 cd projects/ai-passport/voice-source
-CC=<LOCAL_PATH> ./tools/validate.sh
+./tools/validate.sh
 ```
 
-`cc-macos` 把 `-Wl,--gc-sections` 换成 `-Wl,-dead_strip`，因为 macOS 的 ld64 不认前者。该包装脚本是可重建的临时件，按约定留在 `scratch/`，未进版本控制。Linux 上若本地 OpenOCD 缺少 libusb，先按相邻[开发手册](../DEVELOPMENT.md)加载项目内的库路径。构建环境不会把 Wi-Fi 密码编入镜像。
+`apply_voice.py` 生成的门禁在 macOS 上把 `-Wl,--gc-sections` 换成 `-Wl,-dead_strip`，无需机器专用的临时包装脚本。构建还需要项目 [requirements-dev.txt](../requirements-dev.txt) 中的 CMake 与 Ninja。Linux 的 OpenOCD 若缺少 libusb，按相邻[开发手册](../DEVELOPMENT.md)加载项目内的库路径。构建环境不会把 Wi-Fi 密码编入镜像。
 
 Bridge 测试不依赖 Mac 音频设备：
 
 ```bash
 PYTHONPATH=projects/ai-passport/voice/bridge python3 -m unittest discover -s projects/ai-passport/voice/bridge/tests -v
 ```
+
+## 固件安装
+
+`install.sh` 安装 Mac 桥接；`flash.sh` 安装设备固件。刷机前停止桥接和其他串口工具，USB 数据线需连接设备。必须明确指定串口与应用镜像。
+
+先按上面的“源码与构建”恢复源码并运行门禁。门禁会把应用镜像保存在 `voice-source/build/firmware/<合并镜像哈希>/FoloToy-AI-Passport.bin`。
+
+在已经激活 ESP-IDF 的会话中，从工作区根目录运行：
+
+```bash
+projects/ai-passport/voice/flash.sh /dev/cu.usbmodemXXXX \
+  projects/ai-passport/voice-source/build/firmware/<归档哈希>/FoloToy-AI-Passport.bin
+```
+
+只有固件镜像、没有 ESP-IDF 环境时，可在已经安装的桥接环境中安装刷机工具。此方式不需要编译工具链：
+
+```bash
+projects/ai-passport/voice/bridge/.venv/bin/python -m pip install esptool==4.12.0
+PYTHON=projects/ai-passport/voice/bridge/.venv/bin/python \
+  projects/ai-passport/voice/flash.sh /dev/cu.usbmodemXXXX <应用镜像路径>
+```
+
+脚本先检查 ESP32-C3 镜像，再读取设备 `0x8000` 的分区表。只有 `0x10000` 为未加密的 factory 应用分区，且镜像能放下时才执行写入。随后运行 `verify_flash`。镜像在检查前复制到临时目录，防止检查后源文件被替换。
+
+本次验证的应用大小为 1,212,512 字节；归档为 `8bd71c1dc3bc17e3e7c900e7c426d648f7d98c254c8b8987d246821f5098003b`。不同机器重建可能产生不同哈希，应使用该次构建归档。脚本不写 `0x0` 的合并镜像，不改引导、分区表或 NVS。本轮未连接设备执行刷写。
 
 ## 音频与协议
 

@@ -4,6 +4,7 @@
 #include "driver/usb_serial_jtag.h"
 #include "esp_event.h"
 #include "esp_log.h"
+#include "esp_pm.h"
 #include "esp_netif.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
@@ -22,17 +23,19 @@
 #include <unistd.h>
 #define VOICE_PORT 8765
 _Atomic bool voice_mic, voice_audio, voice_wifi_mode;
+_Atomic bool voice_temporary;
+_Atomic uint32_t voice_session;
 _Atomic int voice_error;
 static _Atomic uint32_t ready_usb, ready_wifi;
 static _Atomic uint32_t ip_address;
-static _Atomic uint8_t shortcut_mod = 5, shortcut_key = 0x2c;
+static _Atomic uint8_t shortcut_mod = 3, shortcut_key = 0x19;
 static _Atomic bool wifi_got_ip, wifi_wanted;
 typedef struct {
     uint32_t version;
     char ssid[33], password[65], token[65];
     uint8_t modifiers, key;
 } configuration_t;
-static configuration_t config = {.version = 1, .modifiers = 5, .key = 0x2c};
+static configuration_t config = {.version = 1, .modifiers = 3, .key = 0x19};
 static nvs_handle_t nvs;
 static bool storage_available;
 typedef struct {
@@ -41,7 +44,14 @@ typedef struct {
     bool wifi;
     uint8_t pcm[VP_PCM_BYTES];
 } audio_chunk_t;
-static QueueHandle_t pcm_queue;
+static QueueHandle_t pcm_queue, shortcut_queue;
+static esp_pm_lock_handle_t audio_power_lock;
+typedef struct {
+    int64_t requested_at;
+    bool wifi, temporary, ending;
+    uint32_t session;
+    uint8_t modifiers, key;
+} shortcut_request_t;
 static uint32_t audio_sequence;
 static uint32_t drops;
 static int listener = -1, client = -1;
@@ -178,10 +188,11 @@ static void status(bool wifi) {
     voice_ip(ip, sizeof(ip));
     int n = snprintf(json, sizeof(json),
                      "{\"ack\":%lu,\"result\":\"%s\",\"mic\":%s,\"audio\":%s,\"bridge\":%s,"
-                     "\"transport\":\"%s\",\"ip\":\"%s\",\"error\":%d,\"drops\":%lu,"
+                     "\"temporary\":%s,\"session\":%lu,\"transport\":\"%s\",\"ip\":\"%s\",\"error\":%d,\"drops\":%lu,"
                      "\"modifiers\":%u,\"key\":%u,\"rate\":16000,\"channels\":1,\"bits\":16}",
                      (unsigned long)ack_sequence, result, voice_mic ? "true" : "false",
                      voice_audio ? "true" : "false", voice_bridge_ready() ? "true" : "false",
+                     voice_temporary ? "true" : "false", (unsigned long)voice_session,
                      voice_wifi_mode ? "wifi" : "usb", ip,
                      voice_error, (unsigned long)drops, voice_modifier(), voice_key());
     if (n > 0 && n < (int)sizeof(json) && !write_frame(wifi, VP_STATUS, 0, json, (size_t)n)) {
@@ -194,21 +205,39 @@ static void status(bool wifi) {
 /* Ask the bridge to press the saved shortcut on the host.
    The event frame carries no acknowledgement field, so it can never be
    mistaken for the reply to a command. */
-bool voice_trigger(void) {
-    bool wifi = voice_wifi_mode;
-    if (!voice_bridge_ready())
+bool voice_trigger(bool ending) {
+    if (!voice_bridge_ready() || !shortcut_queue)
         return false;
-    char json[80];
-    int n = snprintf(json, sizeof(json), "{\"event\":\"shortcut\",\"modifiers\":%u,\"key\":%u}",
-                     voice_modifier(), voice_key());
-    if (n <= 0 || n >= (int)sizeof(json) || !write_frame(wifi, VP_STATUS, 0, json, (size_t)n)) {
-        if (wifi)
+    shortcut_request_t request = {.requested_at = esp_timer_get_time(),
+                                  .wifi = voice_wifi_mode,
+                                  .temporary = voice_temporary, .ending = ending,
+                                  .session = voice_session,
+                                  .modifiers = voice_modifier(), .key = voice_key()};
+    return xQueueSend(shortcut_queue, &request, 0) == pdTRUE;
+}
+/* Only the transport task writes frames and owns the TCP client. */
+static void send_shortcut(void) {
+    shortcut_request_t request;
+    if (xQueueReceive(shortcut_queue, &request, 0) != pdTRUE)
+        return;
+    if (request.wifi != voice_wifi_mode || !voice_bridge_ready() ||
+        (request.temporary && request.session != voice_session) ||
+        (!request.ending && (!voice_mic || !voice_audio)) ||
+        esp_timer_get_time() - request.requested_at > 500000)
+        return;
+    char json[160];
+    int n = snprintf(json, sizeof(json),
+                     "{\"event\":\"shortcut\",\"modifiers\":%u,\"key\":%u,"
+                     "\"temporary\":%s,\"ending\":%s,\"session\":%lu}",
+                     request.modifiers, request.key, request.temporary ? "true" : "false",
+                     request.ending ? "true" : "false", (unsigned long)request.session);
+    if (n > 0 && n < (int)sizeof(json) &&
+        !write_frame(request.wifi, VP_STATUS, 0, json, (size_t)n)) {
+        if (request.wifi)
             close_client();
         else
             ready_usb = 0;
-        return false;
     }
-    return true;
 }
 static const char *str(cJSON *obj, const char *name) {
     cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, name);
@@ -252,6 +281,16 @@ static void command(uint8_t type, uint32_t sequence, const uint8_t *data, size_t
                 ready_wifi = now;
             else
                 ready_usb = now;
+            snprintf(result, sizeof(result), "ok");
+        }
+    } else if (op && !strcmp(op, "stop")) {
+        cJSON *session = cJSON_GetObjectItemCaseSensitive(obj, "session");
+        if (cJSON_IsNumber(session) && session->valuedouble == session->valueint &&
+            session->valueint >= 0) {
+            if (voice_temporary && (uint32_t)session->valueint == voice_session) {
+                voice_mic = false;
+                voice_temporary = false;
+            }
             snprintf(result, sizeof(result), "ok");
         }
     } else if (op && !strcmp(op, "configure") && !wifi && !voice_mic) {
@@ -337,6 +376,7 @@ static void transport_task(void *arg) {
             if (client >= 0 && !authenticated && esp_timer_get_time() - accepted_at > 3000000)
                 close_client();
         }
+        send_shortcut();
         if (xQueueReceive(pcm_queue, &chunk, 0) == pdTRUE) {
             if (voice_mic && voice_bridge_ready() && chunk.wifi == voice_wifi_mode &&
                 esp_timer_get_time() - chunk.captured_at < 100000) {
@@ -358,7 +398,7 @@ static void transport_task(void *arg) {
                 status(true);
             last_status = now;
         }
-        vTaskDelay(pdMS_TO_TICKS(2));
+        vTaskDelay(pdMS_TO_TICKS(voice_mic ? 2 : 20));
     }
 }
 static void audio_task(void *arg) {
@@ -372,21 +412,30 @@ static void audio_task(void *arg) {
                 esp_err_t e = bsp_audio_sleep();
                 if (e != ESP_OK)
                     voice_error = e;
+                (void)esp_pm_lock_release(audio_power_lock);
                 opened = false;
             }
-            vTaskDelay(pdMS_TO_TICKS(20));
+            vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
         if (!opened) {
             /* sleep() leaves the codec in low power; without wake() the format
                call below fails with ESP_ERR_INVALID_STATE and the microphone
                cannot be enabled a second time. */
-            esp_err_t err = bsp_audio_wake();
+            esp_err_t err = esp_pm_lock_acquire(audio_power_lock);
+            if (err != ESP_OK) {
+                voice_error = err;
+                voice_mic = false;
+                continue;
+            }
+            err = bsp_audio_wake();
             if (err == ESP_OK)
                 err = bsp_audio_init();
             if (err == ESP_OK)
                 err = bsp_audio_set_format(16000, 16, 1);
             if (err != ESP_OK) {
+                (void)bsp_audio_sleep();
+                (void)esp_pm_lock_release(audio_power_lock);
                 voice_error = err;
                 voice_mic = false;
                 continue;
@@ -454,8 +503,12 @@ esp_err_t voice_runtime_init(void) {
     err = esp_wifi_set_mode(WIFI_MODE_STA);
     if (err != ESP_OK)
         return err;
+    err = esp_pm_lock_create(ESP_PM_CPU_FREQ_MAX, 0, "voice_audio", &audio_power_lock);
+    if (err != ESP_OK)
+        return err;
     pcm_queue = xQueueCreate(4, sizeof(audio_chunk_t));
-    if (!pcm_queue)
+    shortcut_queue = xQueueCreate(4, sizeof(shortcut_request_t));
+    if (!pcm_queue || !shortcut_queue)
         return ESP_ERR_NO_MEM;
     if (xTaskCreate(transport_task, "voice_link", 6144, NULL, 3, NULL) != pdPASS)
         return ESP_ERR_NO_MEM;

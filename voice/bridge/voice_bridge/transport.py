@@ -4,7 +4,7 @@ import time
 class TcpLink:
     def __init__(self, host):
         self.socket = socket.create_connection((host, 8765), timeout=3)
-        self.socket.settimeout(0.1)
+        self.socket.settimeout(0.5)
         self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 
     def read(self):
@@ -28,7 +28,7 @@ class SerialLink:
         self.serial = serial.Serial()
         self.serial.port = port
         self.serial.baudrate = 115200  # USB Serial/JTAG ignores UART baudrate.
-        self.serial.timeout = 0.1
+        self.serial.timeout = 0.5
         self.serial.write_timeout = 1
         self.serial.dtr = False
         self.serial.rts = False
