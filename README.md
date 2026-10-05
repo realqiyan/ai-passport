@@ -2,7 +2,9 @@
 
 更新日期：2026-10-05。
 
-原目标：配置 AI Passport 开发环境，保留开发手册，并开发离线时钟。用户已确认采用离线时钟和按键校时，随后要求“不用运行，写好文档就可以了”。本次按后续要求交付文档，保留已写好的源码，不继续构建或运行。
+原目标：配置 AI Passport 开发环境，保留开发手册，并开发离线时钟。用户已确认采用离线时钟和按键校时。
+
+2026-10-05 后续要求“完成并安装时钟应用”。本次在 macOS（Apple Silicon）完成工具链安装、固件构建、写入设备和启动验证，应用镜像已装到设备。
 
 入口：[开发手册](DEVELOPMENT.md)、[时钟源码](clock/main/main.c)、[时钟模型](clock/main/clock_model.c)、[测试](clock/tests/test_clock_model.c)。
 
@@ -23,18 +25,21 @@ NVS 命名空间为 `clock_v1`。保存最后确认的时间、12/24 小时制�
 
 ## 当前状态
 
-- 官方完整源码已下载至 `source/`，基线为 `33d3d1d93a1125b356b47b6d83a7a60121be801e`。
-- 本地分支为 `feature/offline-clock`；五个官方技能已安装并验证可读。
-- 应用源码、日期模型、主机测试和中文字体子集已实现。
-- 官方静态检查及主机测试通过；时钟模型通过地址和未定义行为检查。
-- 字体覆盖检查通过：38 个界面中文码点全部存在。
-- ESP-IDF 5.5.3 源码已下载；RISC-V 编译器、GDB、CMake 和 Ninja 已安装。
-- OpenOCD 安装检查因缺少 `libusb-1.0.so.0` 失败。已将 Debian libusb 包提取到项目工具目录，尚未重新验证。
-- ESP-IDF Python 环境尚未安装；环境配置未完成，固件未构建，也没有可交付的合并固件。
-- 用户要求停止后续运行。设备测试未执行，没有刷机。
+2026-10-05 在本机（macOS arm64）完成安装、构建和刷机。
 
-## 下一步
+- 官方源码在 `source/`，基线 `33d3d1d93a1125b356b47b6d83a7a60121be801e`（Gitee 镜像 HEAD 与该提交相同）；分支 `feature/offline-clock`；时钟覆盖 12 个文件，五个官方技能已安装并验证可读。
+- ESP-IDF 5.5.3 来自官方离线归档 `esp-idf-v5.5.3.zip`（dl.espressif.cn，1,790,510,329 字节，本地 SHA-256 `d16e6b57b1df1a523aff6a1d0ef2f99cf058cb71e73f694429769eaaea171428`）。下载站点未提供官方校验文件；改用提交哈希交叉核对：检出 HEAD 为 `2c211b23…`，23 个子模块固定在记录提交且工作树干净。
+- 工具链：`IDF_TOOLS_PATH` 指向 `.tools/espressif`（riscv32-esp-elf、GDB、OpenOCD、Python 环境）。macOS 上 ESP-IDF 不再自带 CMake 和 Ninja，已用 Homebrew 安装 cmake 4.4.4 和 ninja 1.13.2，与 `requirements-dev.txt` 版本一致。
+- 构建：`./tools/validate.sh --firmware` 通过。应用镜像 727,824 字节，合并镜像 793,360 字节（SHA-256 `f0bd279a70bbdfd9cc0d911ee92038f678f0e4afee7719cbb1b4fc3eac4e62aa`），ELF SHA-256 `db549da7…`，归档在 `source/build/firmware/f0bd279a…`，`archive_firmware.py verify` 通过。
+- 静态检查：`check_repo.py`、actionlint 1.7.12（Homebrew）、全部 C 主机测试和 5 个 Python 测试通过；字体覆盖 38 个中文码点在字表、生成字体、TTF 与运行时断言四处一致。macOS 的 ld64 不支持 `-Wl,--gc-sections`，用等价 `-Wl,-dead_strip` 的编译器包装脚本运行，脚本留在 `scratch/`，未进版本控制。
+- 完整门禁：`CC=<包装脚本> ./tools/validate.sh` 退出码 0，静态检查和固件检查全部 PASS，重建的合并镜像同为 793,360 字节。
+- 设备：ESP32-C3，MAC `98:c3:77:f5:72:4c`，端口 `/dev/cu.usbmodem2101`。设备现有分区表与官方默认不同：`nvs 0x9000/24K`、`phy_init 0xf000/4K`、`factory 0x10000/3M`、`cardid 0x356000/16K`、`easter 0x360000/388K`、`recovery 0x700000/1M`。按此只写应用分区 `0x10000`（用户选定），不动引导、分区表和其它数据。
+- 写入的应用镜像 SHA-256 `063c9519d1d94decfff33d170e0c6a5f8b5e5801d72aa3fda7902ed0d5e5a298`，与归档一致。启动日志确认从 `0x10000` 加载、ELF SHA 与归档相同、CW2017 电量计识别成功、显示和 LVGL 就绪、按键就绪，并输出 `Clock ready`；无缺字和存储错误。
 
-本次文档工作已完成。以后需要运行时，再按开发手册补齐环境并构建；设备验收在用户授权后进行。
+## 未验证与下一步
 
-`source/` 和下载工具保持本地保存并由工作区 Git 忽略。长期源码保存在 `clock/`；恢复方式见手册。工作区版本控制保存源码和文档，固件未发布。
+- 2026-10-05 用户在设备上确认功能全部生效（显示、按键、校时和设置保存）。
+- 长期项目仍需观察：实际走时误差（无 RTC，只能靠人工校时修正）和电量读数的准确度。
+- 设备上原有分区表与 `partitions.csv` 不同，若以后要写合并镜像从 `0x0` 开始，会改掉现有分区表和 `cardid`、`easter`、`recovery` 数据。
+
+`source/` 和工具目录保持本地保存并由工作区 Git 忽略。长期源码保存在 `clock/`；恢复方式见手册。工作区版本控制保存源码和文档，固件未发布。
