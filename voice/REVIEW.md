@@ -16,6 +16,8 @@ Host tests：PASS。桥接 62 项中 60 项通过、2 项因 Linux 缺少 macOS 
 
 Build：PASS。ESP-IDF 5.5.3 完整门禁和归档校验通过。应用 1,213,136 字节，SHA-256 `a3ae182fb8715bfa8a5c8fd2e2034e6ee1231742459016f5c071d36d2679d16a`。归档为 `../voice-source/build/firmware/c3fdf9fdaff86753adcf3c615bc14d7331f3fa3847dca6c481da0eb81a29d35e/`，完整镜像哈希与目录名一致。匹配 ELF SHA-256 为 `6fbb9e6bf7d08030c039e883f54a429fe87fbd4e18c02b68f9def6707a49f475`。已有设备使用 `flash.sh` 只写应用，保留分区与 NVS。
 
+2026-10-06 本机重建并刷写：镜像大小同为 1,213,136 字节，哈希不同——应用 SHA-256 `c0bca8b522b11534110e7cae1d6902e0c2296bcb023e810f2e0749b6b27fa2d0`，ELF SHA-256 `3512193b…`，归档 `306f0ccd…`，门禁 0 失败、归档校验通过。`flash.sh` 只写 `0x10000` 应用分区，回读校验一致；启动日志显示从该分区加载，无 panic。Wi-Fi 自动发现的实机效果尚未验收。
+
 Host tests：PASS。桥接 59 项中 57 项通过、2 项因 Linux 缺少 macOS 框架跳过；脚本与刷机测试 26 项通过，固件主机测试通过。新增检查覆盖本地 UDP 收发、错误编号丢弃、重复回复、多设备拒绝、旧地址更新、认证失败保留缓存、旧固件回退和带空格路径。
 
 Device tests：NOT RUN。当前环境未发现串口设备。Unverified：Mac 本地网络权限、真实路由器广播、设备断线重连与 DHCP 地址变化。需同时更新 Mac 桥接与固件；使用旧固件时可手动指定 IP。操作见[Wi-Fi 使用](README.md#wi-fi-使用)。

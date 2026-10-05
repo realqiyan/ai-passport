@@ -8,6 +8,8 @@
 
 2026-10-06 不含自动发现的上一版固件从源码重建并写入设备。本轮在 macOS 重新克隆官方基线（改用 Gitee 镜像，见下文）、运行 `apply_voice.py`，完整门禁通过。应用镜像 1,212,512 字节，SHA-256 `8661b8b0af43e7ec522f92ff0374d977a69a168b8ef076d0aeac630f72f11217`；ELF SHA-256 `c8405d0d…`；归档 `voice-source/build/firmware/bbd52b10be55a7626f5dc0f2f34a13d186190b1d3fe84d642125a6810c94ae01/`，`archive_firmware.py verify` 通过。刷写只写 `0x10000` 应用分区，回读校验一致；启动日志显示 `Loaded app from partition at offset 0x10000`，未见 panic 或重启。设备 MAC 为 `98:c3:77:f5:72:4c`。固件的日志等级在构建时被关闭，串口不输出应用行。本轮未做应用功能实机验收。
 
+2026-10-06 含 Wi-Fi 自动发现的固件重建并写入设备。完整门禁通过（0 失败）；应用镜像 1,213,136 字节，本机 SHA-256 `c0bca8b522b11534110e7cae1d6902e0c2296bcb023e810f2e0749b6b27fa2d0`，ELF SHA-256 `3512193b…`，归档 `voice-source/build/firmware/306f0ccd253bb3ea7f6f63effbf2bd72fc16edd162fb92de776ce36b444b09ea/`，`archive_firmware.py verify` 通过。本机镜像与另一台构建的镜像大小相同、哈希不同。刷写只写 `0x10000` 应用分区，回读校验一致；启动日志显示从该分区加载，未见 panic 或重启。自动发现的实机效果尚未验收。
+
 当前版本是独立应用，固件启动进入语音页面。设备重启后麦克风关闭，音频传输默认为 USB。
 
 ## 快速开始
