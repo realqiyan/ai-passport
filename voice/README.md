@@ -1,10 +1,12 @@
 # AI Passport 语音输入应用
 
-更新日期：2026-10-05。设备使用自带麦克风采集音频，通过 USB 或 Wi-Fi 把音频送到 Mac；按键请求由 Mac 桥接程序注入。Mac 程序把音频写入 BlackHole，语音输入法通过聚合设备 `Passport Mic` 读取音频。
+更新日期：2026-10-06。设备使用自带麦克风采集音频，通过 USB 或 Wi-Fi 把音频送到 Mac；按键请求由 Mac 桥接程序注入。Mac 程序把音频写入 BlackHole，语音输入法通过聚合设备 `Passport Mic` 读取音频。
 
 **2026-10-05 设计变更**：原设计的 BLE 键盘投递不可用。macOS 从未把 `Passport Voice` 挂载成 HID 键盘，蓝牙设置里也没有连接入口。快捷键改由桥接程序注入；设备只发送一条 `{"event":"shortcut","modifiers":N,"key":N}` 请求，不参与按键合成。BLE HID 代码已从固件移除，设备不再初始化蓝牙。
 
-2026-10-05 当前版本：支持确认键临时输入、再次确认结束并关麦，以及保存或临时覆盖快捷键。完整固件门禁通过；桥接测试 51 项中 49 项通过、2 项因 Linux 缺少 macOS 框架跳过，脚本与刷机测试 25 项通过。本轮未刷写设备。省电规则、迁移步骤及未验证边界见下文和 [审查记录](REVIEW.md)。
+2026-10-05 当前版本：支持确认键临时输入、再次确认结束并关麦，以及保存或临时覆盖快捷键。完整固件门禁通过；桥接测试 51 项中 49 项通过、2 项因 Linux 缺少 macOS 框架跳过，脚本与刷机测试 25 项通过。该轮未刷写设备。省电规则、迁移步骤及未验证边界见下文和 [审查记录](REVIEW.md)。
+
+2026-10-06 从源码重建并写入设备。本轮在 macOS 重新克隆官方基线（改用 Gitee 镜像，见下文）、运行 `apply_voice.py`，完整门禁通过。应用镜像 1,212,512 字节，SHA-256 `8661b8b0af43e7ec522f92ff0374d977a69a168b8ef076d0aeac630f72f11217`；ELF SHA-256 `c8405d0d…`；归档 `voice-source/build/firmware/bbd52b10be55a7626f5dc0f2f34a13d186190b1d3fe84d642125a6810c94ae01/`，`archive_firmware.py verify` 通过。刷写只写 `0x10000` 应用分区，回读校验一致；启动日志显示 `Loaded app from partition at offset 0x10000`，未见 panic 或重启。设备 MAC 为 `98:c3:77:f5:72:4c`。固件的日志等级在构建时被关闭，串口不输出应用行。本轮未做应用功能实机验收。
 
 当前版本是独立应用，固件启动进入语音页面。设备重启后麦克风关闭，音频传输默认为 USB。
 
@@ -273,6 +275,8 @@ python3 projects/ai-passport/apply_voice.py
 
 恢复后用 `git -C projects/ai-passport/source worktree list` 核对两个目录。上述命令恢复源码，不会恢复此前固件归档；ESP-IDF 工具链需按[开发手册](../DEVELOPMENT.md#安装构建环境)另行安装。
 
+克隆地址可用 Gitee 镜像 `https://gitee.com/FoloToy/ai-passport.git`。2026-10-06 实测：该镜像 `main` HEAD 等于基线 `33d3d1d`，完整克隆约 10 秒、约 1.8 MB/s；GitHub 直连约 27 KB/s。同日实测 `--filter=blob:none` 的部分克隆因按需逐文件取 blob 而极慢（约 20 KB/s），恢复时改用完整克隆。
+
 在已配置 ESP-IDF 5.5.3 的 Bash 会话中运行。需先激活项目内的 ESP-IDF 环境。恢复后的门禁会自动处理 macOS 链接器参数：
 
 ```bash
@@ -314,7 +318,7 @@ PYTHON=projects/ai-passport/voice/bridge/.venv/bin/python \
 
 脚本先检查 ESP32-C3 镜像，再读取设备 `0x8000` 的分区表。只有 `0x10000` 为未加密的 factory 应用分区，且镜像能放下时才执行写入。随后运行 `verify_flash`。镜像在检查前复制到临时目录，防止检查后源文件被替换。
 
-此前验证的应用大小为 1,212,512 字节；历史归档为 `8bd71c1dc3bc17e3e7c900e7c426d648f7d98c254c8b8987d246821f5098003b`。该本机归档已从回收站恢复并通过校验。重新构建后使用对应的新归档；不同机器重建可能产生不同哈希。脚本不写 `0x0` 的合并镜像，不改引导、分区表或 NVS。本轮未连接设备执行刷写。
+应用镜像大小为 1,212,512 字节。2026-10-06 刷写使用本轮归档 `bbd52b10be55a7626f5dc0f2f34a13d186190b1d3fe84d642125a6810c94ae01`，应用 SHA-256 `8661b8b0af43e7ec522f92ff0374d977a69a168b8ef076d0aeac630f72f11217`；历史归档为 `8bd71c1dc3bc17e3e7c900e7c426d648f7d98c254c8b8987d246821f5098003b`。不同机器重建可能产生不同哈希。脚本不写 `0x0` 的合并镜像，不改引导、分区表或 NVS。
 
 ## 音频与协议
 

@@ -45,6 +45,8 @@ python3 projects/ai-passport/apply_voice.py
 
 两者恢复后，用 `git -C projects/ai-passport/source worktree list` 核对目录关系。官方最新分支可能与本基线不同；应用脚本只接受记录的提交。以上步骤恢复源码，不会恢复此前固件归档，也不会安装 ESP-IDF 工具链。
 
+GitHub 直连较慢时改用 Gitee 镜像 `https://gitee.com/FoloToy/ai-passport.git`。2026-10-06 实测该镜像 `main` HEAD 等于基线提交，完整克隆约 10 秒、约 1.8 MB/s，而 GitHub 直连约 27 KB/s。同日实测 `--filter=blob:none` 因按需逐文件取 blob 而很慢（约 20 KB/s），恢复时改用完整克隆。
+
 ### 安装构建环境
 
 准备项目开发环境与 ESP-IDF：
