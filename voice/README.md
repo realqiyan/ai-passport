@@ -253,9 +253,16 @@ Mac 程序连接设备的 TCP `8765` 端口，网络必须允许同一局域网�
 | `firmware/tests/`、`bridge/tests/` | 固定数据和本地 TCP 测试，桥接侧不依赖真实音频设备 |
 | `../apply_voice.py` | 将源码应用到独立官方工作树 |
 
-从工作区根目录恢复工作树与源码：
+2026-10-05 按用户要求将本机 `source/` 和 `voice-source/` 移入回收站，其中的固件归档也已移走。下面的恢复流程用于再次构建；验收结果保留为历史记录。
+
+从工作区根目录恢复工作树与源码。`source/` 缺失时，先恢复官方仓库并固定基线：
 
 ```bash
+# source/ 不存在时执行
+git clone --filter=blob:none https://github.com/FoloToy/ai-passport.git projects/ai-passport/source
+git -C projects/ai-passport/source checkout -b feature/offline-clock 33d3d1d93a1125b356b47b6d83a7a60121be801e
+
+# voice-source/ 不存在时执行
 git -C projects/ai-passport/source worktree add ../voice-source -b feature/voice-input 33d3d1d93a1125b356b47b6d83a7a60121be801e
 python3 projects/ai-passport/apply_voice.py
 ```
@@ -303,7 +310,7 @@ PYTHON=projects/ai-passport/voice/bridge/.venv/bin/python \
 
 脚本先检查 ESP32-C3 镜像，再读取设备 `0x8000` 的分区表。只有 `0x10000` 为未加密的 factory 应用分区，且镜像能放下时才执行写入。随后运行 `verify_flash`。镜像在检查前复制到临时目录，防止检查后源文件被替换。
 
-本次验证的应用大小为 1,212,512 字节；归档为 `8bd71c1dc3bc17e3e7c900e7c426d648f7d98c254c8b8987d246821f5098003b`。不同机器重建可能产生不同哈希，应使用该次构建归档。脚本不写 `0x0` 的合并镜像，不改引导、分区表或 NVS。本轮未连接设备执行刷写。
+此前验证的应用大小为 1,212,512 字节；历史归档为 `8bd71c1dc3bc17e3e7c900e7c426d648f7d98c254c8b8987d246821f5098003b`。该本机归档已随工作树移入回收站；重新构建后使用新归档。不同机器重建可能产生不同哈希。脚本不写 `0x0` 的合并镜像，不改引导、分区表或 NVS。本轮未连接设备执行刷写。
 
 ## 音频与协议
 
