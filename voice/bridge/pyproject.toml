@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "passport-voice-bridge"
+version = "0.1.0"
+description = "Receive AI Passport PCM and route it to a macOS audio input"
+requires-python = ">=3.10"
+dependencies = ["pyserial>=3.5,<4", "sounddevice>=0.5,<0.6"]
+
+[project.scripts]
+passport-voice = "voice_bridge.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["voice_bridge*"]

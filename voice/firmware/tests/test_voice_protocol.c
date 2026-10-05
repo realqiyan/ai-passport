@@ -1,0 +1,64 @@
+#include "voice_model.h"
+#include "voice_protocol.h"
+#include <assert.h>
+#include <stdio.h>
+#include <string.h>
+static int count;
+static void accept(uint8_t type, uint32_t seq, const uint8_t *p, size_t n, void *ctx) {
+    (void)ctx;
+    assert(type == VP_PCM);
+    assert(seq == 42);
+    assert(n == 3);
+    assert(!memcmp(p, "abc", 3));
+    count++;
+}
+int main(void) {
+    uint8_t frame[VP_HEADER + VP_MAX_PAYLOAD];
+    vp_parser_t parser = {0};
+    size_t n = vp_encode(frame, VP_PCM, 42, "abc", 3);
+    assert(n == 19);
+    /* Shared Python/C fixture. */
+    const uint8_t expected[] = {0x56, 0x50, 0x30, 0x31, 1,    0,    3,    0,    42,  0,
+                                0,    0,    0xf9, 0x72, 0xe5, 0x8d, 0x61, 0x62, 0x63};
+    assert(!memcmp(frame, expected, sizeof(expected)));
+    vp_feed(&parser, "boot log", 8, accept, NULL);
+    for (size_t i = 0; i < n; i++)
+        vp_feed(&parser, frame + i, 1, accept, NULL);
+    assert(count == 1);
+    frame[16] ^= 1;
+    vp_feed(&parser, frame, n, accept, NULL);
+    assert(count == 1);
+    frame[16] ^= 1;
+    vp_feed(&parser, frame, n, accept, NULL);
+    assert(count == 2);
+    frame[6] = 255;
+    frame[7] = 255;
+    vp_feed(&parser, frame, n, accept, NULL);
+    n = vp_encode(frame, VP_PCM, 42, "abc", 3);
+    vp_feed(&parser, frame, n, accept, NULL);
+    assert(count == 3);
+    assert(vp_encode(frame, 1, 0, "", VP_MAX_PAYLOAD + 1) == 0);
+    assert(voice_shortcut_valid(5, 0x2c));
+    assert(!voice_shortcut_valid(256, 4));
+    assert(!voice_shortcut_valid(0, 0));
+    for (int a = 0; a < 2; a++)
+        for (int b = 0; b < 2; b++)
+            for (int c = 0; c < 2; c++)
+                assert(voice_can_trigger(a, b, c) == (a && b && c));
+    const uint8_t nested[] = "[[[[[[[[[0]]]]]]]]]";
+    assert(!voice_json_depth_valid(nested, sizeof(nested) - 1));
+    const uint8_t quoted[] = "{\"op\":\"{[test]}\"}";
+    assert(voice_json_depth_valid(quoted, sizeof(quoted) - 1));
+    assert(!voice_json_depth_valid((const uint8_t *)"}", 1));
+    assert(voice_password_valid("test-pass"));
+    assert(!voice_password_valid("short"));
+    assert(
+        voice_password_valid("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"));
+    assert(
+        !voice_password_valid("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"));
+    assert(voice_ready_fresh(2999, 1));
+    assert(!voice_ready_fresh(3001, 1));
+    assert(!voice_ready_fresh(1, 0));
+    assert(voice_ready_fresh(5, 0xfffffff0u));
+    puts("Voice protocol and trigger tests: PASS");
+}
