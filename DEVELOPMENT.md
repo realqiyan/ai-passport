@@ -2,7 +2,7 @@
 
 更新日期：2026-10-05。适用基线：官方仓库 `33d3d1d93a1125b356b47b6d83a7a60121be801e`。
 
-2026-10-05 已在一台 macOS（Apple Silicon，Darwin 25.6）机器上按本文完成安装、构建和刷机，原版时钟应用已在设备上启动。本文新增的省电版本尚未构建或刷机。下面保留通用流程，本机实际使用的路线见[从空环境安装](#从空环境安装)；当前状态见 [README](README.md)。
+2026-10-05 已在一台 macOS（Apple Silicon，Darwin 25.6）机器上按本文完成安装、构建和刷机。先安装原版时钟，随后安装省电版本，两者都在设备上启动。下面保留通用流程，本机实际使用的路线见[从空环境安装](#从空环境安装)；当前状态见 [README](README.md)。
 
 ## 快速开始
 
@@ -199,7 +199,7 @@ cd projects/ai-passport/source
 
 ## 时钟低功耗方法
 
-更新日期：2026-10-05。用户已确认采用以下四项改动。源码和主机测试已完成；此省电版本尚未完成固件构建、设备验证或电流测量。此前 macOS 构建和设备结果属于原版时钟，不能作为此版本的验收结果。
+更新日期：2026-10-05。用户已确认采用以下四项改动。源码、主机测试、macOS 固件构建和刷机已完成；设备上的熄屏、按键唤醒、显示和电流测量尚待人工验证。此前 macOS 构建和设备结果属于原版时钟，不能作为此版本的验收结果。
 
 ### 已实现的行为
 
@@ -265,7 +265,9 @@ Light-sleep 保留内存。ESP-IDF 在唤醒后为 `esp_timer_get_time()` 补上
 
 本轮 `./tools/validate.sh --static` 全部通过，新增时钟测试覆盖熄屏边界、校时期间不熄屏、三键唤醒、首次按键消费、交叉按键和休眠后跨日进位。时钟测试还通过 AddressSanitizer 与 UndefinedBehaviorSanitizer。
 
-当前 Linux 环境未完成 ESP-IDF Python 环境安装，`env.sh` 报 `idf5.5_py3.13_env/bin/python` 不存在。固件门禁因 `idf.py` 不可用而停止，尚未生成此版本的新固件。按[从空环境安装](#从空环境安装)补齐环境，然后运行完整门禁。之前的归档哈希不能作为本轮交付文件。
+省电版本已在 macOS（Apple Silicon）完成固件构建和刷机，走[从空环境安装](#从空环境安装)的 macOS 路线，用 `-Wl,-dead_strip` 包装脚本运行完整门禁（退出码 0）。本轮交付文件是应用镜像 754,128 字节、SHA-256 `ed3f0c8d3b7ab7d08b734324c6bd562657d3770739891487250d4698cc185353`，合并镜像 819,664 字节，ELF SHA-256 `98122d19…`，归档在 `source/build/firmware/eab1c9cb…`。上一轮归档哈希只对应原版时钟，不能作为本版本交付文件。
+
+用独立临时目录重新配置生成的 `sdkconfig` 含 `CONFIG_PM_ENABLE=y`、`CONFIG_PM_POWER_DOWN_CPU_IN_LIGHT_SLEEP=y`、`CONFIG_FREERTOS_USE_TICKLESS_IDLE=y`、`CONFIG_FREERTOS_IDLE_TIME_BEFORE_SLEEP=2`。构建通过只说明配置写入成功；运行状态仍以启动日志为准。
 
 设备验收按以下步骤执行：
 
@@ -279,7 +281,7 @@ Light-sleep 保留内存。ESP-IDF 在唤醒后为 `esp_timer_get_time()` 补上
 
 区分电池供电、USB 连接及充电状态。充电电流不是应用耗电，USB 调试也可能影响睡眠。需要核实实际睡眠时，可临时启用 `CONFIG_PM_PROFILING` 并用 `esp_pm_dump_locks(stdout)` 查看电源锁和睡眠时间，再按无 USB 供电条件测电流。未实测前，不提供节电百分比或续航倍数。
 
-新固件构建通过后，仍按应用分区升级并核对设备布局，避免覆盖 `cardid`、`easter` 和 `recovery`。本轮未刷机。
+新固件按应用分区升级，避免覆盖 `cardid`、`easter` 和 `recovery`。本轮已刷入（见[刷机和设备验收](#刷机和设备验收)），启动日志中 `pm` 报告的 `CPU_MAX: 80, APB_MAX: 80, APB_MIN: 40, Light sleep: ENABLED` 证明电源管理在设备上生效，不是构建期配置的推测。上电后 30.188 秒输出 `clock: Screen off`，熄屏后连续观察 60 秒无错误、无重启、无异常日志。上表第 2 至 7 项仍需人工执行，实际功耗尚未测量。
 
 ## 中文字体
 
@@ -372,7 +374,23 @@ python -m esptool --chip esp32c3 -p <实际串口> -b 460800 \
 | `easter` | `0x360000` / 388 K |
 | `recovery` | `0x700000` / 1 M |
 
-设备布局与仓库 `partitions.csv` 不同。只写应用分区可保留引导、分区表、NVS、`cardid`、`easter` 和 `recovery`。写入的应用镜像 SHA-256 为 `063c9519d1d94decfff33d170e0c6a5f8b5e5801d72aa3fda7902ed0d5e5a298`，与归档一致。
+设备布局与仓库 `partitions.csv` 不同。只写应用分区可保留引导、分区表、NVS、`cardid`、`easter` 和 `recovery`。两次写入都使用这条流程：
+
+| 版本 | 应用镜像 SHA-256 | 归档 |
+| --- | --- | --- |
+| 原版时钟 | `063c9519d1d94decfff33d170e0c6a5f8b5e5801d72aa3fda7902ed0d5e5a298` | `f0bd279a…` |
+| 省电版本 | `ed3f0c8d3b7ab7d08b734324c6bd562657d3770739891487250d4698cc185353` | `eab1c9cb…` |
+
+省电版本启动日志的关键行：
+
+```text
+I (175) pm: Frequency switching config: CPU_MAX: 80, APB_MAX: 80, APB_MIN: 40, Light sleep: ENABLED
+I (176) clock: Power: 40-80 MHz; automatic Light-sleep enabled when screen off
+I (629) clock: Clock ready; confirm time after every restart
+I (30188) clock: Screen off
+```
+
+`Screen off` 出现在上电 30.188 秒后，说明空闲熄屏在设备上执行。启动日志的 ELF SHA256 为 `98122d19f…`，与归档 ELF 一致。
 
 启动日志可核对三项：应用从 `0x10000` 加载、日志中的 ELF SHA-256 与归档 ELF 相同、程序输出 `Clock ready`。串口日志只证明固件启动，不能证明显示和按键正常。
 
