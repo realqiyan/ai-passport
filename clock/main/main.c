@@ -1,0 +1,221 @@
+#include "clock_model.h"
+#include "bsp_battery.h"
+#include "bsp_button.h"
+#include "bsp_display.h"
+#include "esp_log.h"
+#include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
+#include "freertos/task.h"
+#include "lvgl.h"
+#include "nvs.h"
+#include "nvs_flash.h"
+#include <stdio.h>
+
+LV_FONT_DECLARE(clock_font_16);
+
+static const char *TAG = "clock";
+static QueueHandle_t input_queue;
+static clock_model_t clock_state;
+static nvs_handle_t settings;
+static bool storage_ok;
+static bool battery_ok;
+static bool save_failed;
+static lv_obj_t *time_label, *seconds_label, *date_label, *status_label;
+static lv_obj_t *battery_label, *format_label, *edit_label, *help_label;
+static lv_obj_t *second_bar;
+
+typedef struct { bsp_btn_t button; bsp_btn_ev_t event; } input_t;
+
+static lv_obj_t *label(lv_obj_t *parent, int y, const lv_font_t *font, uint32_t color)
+{
+    lv_obj_t *obj = lv_label_create(parent);
+    lv_obj_set_width(obj, 216);
+    lv_obj_set_style_text_font(obj, font, 0);
+    lv_obj_set_style_text_color(obj, lv_color_hex(color), 0);
+    lv_obj_set_style_text_align(obj, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(obj, LV_ALIGN_TOP_MID, 0, y);
+    return obj;
+}
+
+static void build_ui(void)
+{
+    lv_obj_t *screen = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(screen, lv_color_hex(0x101923), 0);
+    lv_obj_set_style_pad_all(screen, 0, 0);
+    lv_obj_remove_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *title = label(screen, 20, &clock_font_16, 0x7DE2C6);
+    lv_label_set_text(title, "时钟");
+    lv_obj_set_width(title, 80);
+    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 18, 20);
+    battery_label = label(screen, 20, &lv_font_montserrat_14, 0xB8C6D4);
+    lv_obj_set_width(battery_label, 70);
+    lv_obj_align(battery_label, LV_ALIGN_TOP_RIGHT, -18, 20);
+    status_label = label(screen, 55, &clock_font_16, 0xFFCA72);
+    time_label = label(screen, 89, &lv_font_montserrat_48, 0xF2F6FA);
+    seconds_label = label(screen, 150, &lv_font_montserrat_20, 0x7DE2C6);
+    format_label = label(screen, 179, &lv_font_montserrat_14, 0xB8C6D4);
+    date_label = label(screen, 205, &lv_font_montserrat_20, 0xF2F6FA);
+    edit_label = label(screen, 232, &clock_font_16, 0x7DE2C6);
+    second_bar = lv_bar_create(screen);
+    lv_obj_set_size(second_bar, 190, 3);
+    lv_obj_align(second_bar, LV_ALIGN_TOP_MID, 0, 260);
+    lv_bar_set_range(second_bar, 0, 59);
+    lv_obj_set_style_bg_color(second_bar, lv_color_hex(0x283645), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(second_bar, lv_color_hex(0x7DE2C6), LV_PART_INDICATOR);
+    help_label = label(screen, 274, &clock_font_16, 0xB8C6D4);
+    lv_label_set_text(help_label, "长按确定设置时间");
+    lv_screen_load(screen);
+}
+
+static void render(int battery)
+{
+    static const char *weekdays[] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
+    static const char *fields[] = {"年", "月", "日", "时", "分"};
+    clock_date_t d = clock_state.editing ? clock_state.draft : clock_decode(clock_state.seconds);
+    lv_label_set_text_fmt(time_label, "%02d:%02d", clock_display_hour(d.hour, clock_state.twelve_hour), d.minute);
+    lv_label_set_text_fmt(seconds_label, "%02d", d.second);
+    lv_label_set_text_fmt(date_label, "%04d-%02d-%02d", d.year, d.month, d.day);
+    lv_label_set_text_fmt(format_label, "%s  /  %s", weekdays[clock_weekday(clock_encode(d))],
+        clock_state.twelve_hour ? (d.hour < 12 ? "AM" : "PM") : "24H");
+    if (battery >= 0) lv_label_set_text_fmt(battery_label, "%d%%", battery);
+    else lv_label_set_text(battery_label, "--%");
+    lv_label_set_text(status_label, save_failed ? "保存失败" :
+        (!storage_ok ? "存储不可用" : (clock_state.confirmed ? "离线时钟" : "请设置时间")));
+    if (clock_state.editing) {
+        lv_label_set_text_fmt(edit_label, "设置：%s", fields[clock_state.field]);
+        lv_label_set_text(help_label, "上加 下减 确定下一项\n长按确定取消");
+    } else {
+        lv_label_set_text_fmt(edit_label, "亮度 %u%%", clock_state.brightness);
+        lv_label_set_text(help_label, "上键制式 下键亮度\n长按确定设置时间");
+    }
+    lv_bar_set_value(second_bar, d.second, LV_ANIM_OFF);
+}
+
+static void save_settings(void)
+{
+    if (!storage_ok) { save_failed = true; return; }
+    esp_err_t err = nvs_set_u8(settings, "format", clock_state.twelve_hour);
+    if (err == ESP_OK) err = nvs_set_u8(settings, "brightness", (uint8_t)clock_state.brightness);
+    if (err == ESP_OK) err = nvs_commit(settings);
+    save_failed = err != ESP_OK;
+    if (save_failed) ESP_LOGE(TAG, "Settings save failed: %s", esp_err_to_name(err));
+}
+
+static void save_time(void)
+{
+    if (!storage_ok) { save_failed = true; return; }
+    esp_err_t err = nvs_set_i64(settings, "time", clock_state.seconds);
+    if (err == ESP_OK) err = nvs_commit(settings);
+    save_failed = err != ESP_OK;
+    if (save_failed) ESP_LOGE(TAG, "Time save failed: %s", esp_err_to_name(err));
+}
+
+static void process_input(input_t input, int64_t now_us)
+{
+    if (input.button == BSP_BTN_OK && input.event == BSP_BTN_LONG) {
+        if (clock_state.editing) clock_edit_cancel(&clock_state);
+        else clock_edit_begin(&clock_state);
+        return;
+    }
+    if (input.event != BSP_BTN_CLICK) return;
+    if (clock_state.editing) {
+        if (input.button == BSP_BTN_UP) clock_edit_adjust(&clock_state, 1);
+        else if (input.button == BSP_BTN_DOWN) clock_edit_adjust(&clock_state, -1);
+        else if (clock_edit_next(&clock_state, now_us)) save_time();
+    } else if (input.button == BSP_BTN_UP) {
+        clock_state.twelve_hour = !clock_state.twelve_hour;
+        save_settings();
+    } else if (input.button == BSP_BTN_DOWN) {
+        clock_state.brightness = clock_state.brightness == 80 ? 25 : clock_state.brightness == 25 ? 50 : 80;
+        bsp_display_backlight((uint8_t)clock_state.brightness);
+        save_settings();
+    }
+}
+
+/* The shared button timer callback only queues bounded work. */
+static void on_button(bsp_btn_t button, bsp_btn_ev_t event, void *user)
+{
+    (void)user;
+    if (event != BSP_BTN_CLICK && !(button == BSP_BTN_OK && event == BSP_BTN_LONG)) return;
+    input_t input = {button, event};
+    (void)xQueueSend(input_queue, &input, 0);
+}
+
+static void clock_task(void *arg)
+{
+    (void)arg;
+    int battery = -1;
+    int64_t battery_due = 0;
+    for (;;) {
+        input_t input;
+        bool received = xQueueReceive(input_queue, &input, pdMS_TO_TICKS(100)) == pdTRUE;
+        int64_t now = esp_timer_get_time();
+        clock_tick(&clock_state, now);
+        if (received) process_input(input, now);
+        if (battery_ok && now >= battery_due) {
+            battery = bsp_battery_soc();
+            battery_due = now + INT64_C(30000000);
+        }
+        if (bsp_lvgl_lock(100)) {
+            render(battery);
+            bsp_lvgl_unlock();
+        }
+    }
+}
+
+static bool check_font(void)
+{
+    /* Every fixed Chinese glyph must exist in the pinned font. */
+    static const uint32_t glyphs[] = {
+        0x65F6,0x949F,0x4FDD,0x5B58,0x5931,0x8D25,0x5B58,0x50A8,0x4E0D,0x53EF,0x7528,
+        0x79BB,0x7EBF,0x8BF7,0x8BBE,0x7F6E,0x95F4,0x5E74,0x6708,0x65E5,0x5206,0xFF1A,
+        0x4E0A,0x52A0,0x4E0B,0x51CF,0x786E,0x5B9A,0x4E00,0x9879,0x957F,0x6309,0x53D6,
+        0x6D88,0x4EAE,0x5EA6,0x952E,0x5236,0x5F0F
+    };
+    for (size_t i = 0; i < sizeof(glyphs) / sizeof(glyphs[0]); i++) {
+        lv_font_glyph_dsc_t glyph = {0};
+        if (!lv_font_get_glyph_dsc(&clock_font_16, &glyph, glyphs[i], 0) || glyph.is_placeholder) {
+            ESP_LOGE(TAG, "Missing Chinese glyph U+%04lx", (unsigned long)glyphs[i]);
+            return false;
+        }
+    }
+    return true;
+}
+
+void app_main(void)
+{
+    int64_t saved = clock_encode((clock_date_t){2026,1,1,0,0,0});
+    esp_err_t err = nvs_flash_init();
+    /* Preserve existing NVS on failure; do not erase another application's data. */
+    if (err == ESP_OK) err = nvs_open("clock_v1", NVS_READWRITE, &settings);
+    storage_ok = err == ESP_OK;
+    if (!storage_ok) ESP_LOGW(TAG, "NVS unavailable: %s", esp_err_to_name(err));
+    if (storage_ok) (void)nvs_get_i64(settings, "time", &saved);
+    clock_init(&clock_state, saved, esp_timer_get_time());
+    if (storage_ok) {
+        uint8_t value;
+        if (nvs_get_u8(settings, "format", &value) == ESP_OK && value <= 1) clock_state.twelve_hour = value;
+        if (nvs_get_u8(settings, "brightness", &value) == ESP_OK && (value == 25 || value == 50 || value == 80)) clock_state.brightness = value;
+    }
+    battery_ok = bsp_battery_init() == ESP_OK;
+    if (bsp_display_init() != ESP_OK || !bsp_lvgl_init()) {
+        ESP_LOGE(TAG, "Display initialization failed");
+        return;
+    }
+    if (!bsp_lvgl_lock(1000)) { ESP_LOGE(TAG, "LVGL lock failed"); return; }
+    bool font_ok = check_font();
+    if (font_ok) { build_ui(); render(-1); }
+    bsp_lvgl_unlock();
+    if (!font_ok) return;
+    bsp_display_backlight((uint8_t)clock_state.brightness);
+    input_queue = xQueueCreate(16, sizeof(input_t));
+    if (!input_queue) { ESP_LOGE(TAG, "Input queue allocation failed"); return; }
+    err = bsp_button_init(on_button, NULL);
+    if (err != ESP_OK) ESP_LOGE(TAG, "Buttons unavailable: %s", esp_err_to_name(err));
+    if (xTaskCreate(clock_task, "clock", 4096, NULL, 4, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "Clock task allocation failed");
+        return;
+    }
+    ESP_LOGI(TAG, "Clock ready; confirm time after every restart");
+}
