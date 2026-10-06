@@ -4,7 +4,7 @@
 
 用户观察：电量从 99% 降到 0%，设备自动关机，用时不足一天。用户确认期间使用 Wi-Fi，Mac 桥接一直运行。具体小时数、空闲时是否熄屏、麦克风是否关闭、电池实测容量仍未知。
 
-用户已确认的取舍：允许空闲后断开 Wi-Fi，按键后等待重连，以续航为优先。本轮已实现并构建对应改动，尚未刷入设备或测量电流。
+用户已确认的取舍：允许空闲后断开 Wi-Fi，按键后等待重连，以续航为优先。本轮已实现并构建对应改动。2026-10-06 在目标 Mac 重建并刷入设备，设备状态确认新固件在运行；实际电流和续航仍未测量。
 
 ## 结论与证据边界
 
@@ -127,4 +127,26 @@ USB 表读的是 USB 输入侧电流，包含充电及转换损耗。它可用�
 | 完整镜像 | 1,282,176 字节；`4fd22b784c963628149437a9b8527116aa06b9a1be657f0ced7a0b45d8377f18` |
 | 匹配 ELF | `562e23820b8b08348534d4fff574e57502ec8fd801f10991aec4d0f8d62f14a2` |
 
-已有设备应使用项目 `flash.sh`，仅写经检查的 `0x10000` 应用分区，保留引导、分区表和 NVS。固件归档在本机忽略目录，不随 Git 传送。换机器需重建或传送完整归档并校验。下一步是目标 Mac 更新桥接，并在用户同意后刷入此应用镜像，执行上述电池供电验收。
+已有设备应使用项目 `flash.sh`，仅写经检查的 `0x10000` 应用分区，保留引导、分区表和 NVS。固件归档在本机忽略目录，不随 Git 传送。换机器需重建或传送完整归档并校验。目标 Mac 于当日完成重建、重装桥接并刷入应用镜像，见下一节；电池供电验收仍待执行。
+
+## 2026-10-06 目标 Mac 重建与刷机
+
+Linux 归档 `4fd22b78…` 未传到目标 Mac。当日在目标 Mac（Apple Silicon，Darwin 25.6.0）用 ESP-IDF 5.5.3 重新应用源码并重建，同一轮重装 Mac 桥接命令。
+
+- Apply：`apply_voice.py` 应用 17 个文件到 `voice-source`（基线 `33d3d1d9`）。该工作树此前仍是旧应用版本，重建后才包含本轮省电改动。
+- Gate：PASS。完整 `./tools/validate.sh` 退出码 0，布局检查为 `app 1216640 / 8323072 bytes in 'factory' at 0x10000`。
+- Bridge tests：PASS。本机 102 项中 101 项通过、1 项跳过；Linux 环境的另一次运行跳过 2 项。
+- 归档：`voice-source/build/firmware/ffd1247f25447f2474018e194c3a8b5a1fb06a816ce1838ebbe668163144ce45/`，`archive_firmware.py verify` PASS。
+- Flash：PASS。只写 `0x10000` 应用分区，`verify_flash` 摘要一致；分区表回读与既有布局一致。
+- Boot：`rst:0x15 (USB_UART_CHIP_RESET)`（打开串口的已知结果）、`boot:0xa`、`Loaded app from partition at offset 0x10000`，未见 panic 或重启。应用日志按配置关闭，串口没有应用行。
+- 设备状态：USB 桥接读到 `{"mic": false, "audio": false, "bridge": true, "error": 0, "drops": 0, "power_profile": "idle-v1", "battery_pct": 95, "battery_mv": 4099, "screen_off": false, "codec_asleep": true}`。`power_profile=idle-v1` 与 `codec_asleep=true` 说明新固件在运行，冷启动编码器休眠符合设计。`screen_off=false` 因为读数在关麦 30 秒内。
+- Bridge install：PASS。`pipx install --force -e voice/bridge` 后运行 `passport-voice setup`，报告 BlackHole 2ch 与聚合设备 `Passport Mic` 存在，默认输入为 `MacBook Pro麦克风`；桥接退出后默认输入已还原。
+- 未验证：整机电流、CPU 实际睡眠占比、待机续航、30/60 秒空闲后的熄屏与停无线、三键唤醒、重复开关麦、Mac 真实断线重连、Wi-Fi 停无线后的唤醒流程。这些仍需按上文验收表在实体设备上执行。
+
+| 产物 | 大小 / SHA-256 |
+| --- | --- |
+| 应用 `FoloToy-AI-Passport.bin` | 1,216,640 字节；`790d63372e71633744f2cd6ba19901c32143cfd085a1436cf589aee1c17c2fa8` |
+| 完整镜像 | 1,282,176 字节；`ffd1247f25447f2474018e194c3a8b5a1fb06a816ce1838ebbe668163144ce45` |
+| 匹配 ELF | `0a5e3d60f5b894fd1a6a7f997e17b9eabe09858e4de9d3833a475fe6bf4861fd` |
+
+设备 MAC 为 `98:c3:77:f5:72:4c`。本轮未做按键、音频和续航验收。

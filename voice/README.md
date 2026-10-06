@@ -2,7 +2,7 @@
 
 更新日期：2026-10-06。设备使用自带麦克风采集音频，通过 USB 或 Wi-Fi 把音频送到 Mac；按键请求由 Mac 桥接程序注入。Mac 程序把音频写入 BlackHole，语音输入法通过聚合设备 `Passport Mic` 读取音频。
 
-2026-10-06 耗电排查：用户反馈 Wi-Fi 与 Mac 桥接保持连接，少量说话仍在一天内耗尽电量。按用户确认的续航优先方案，新代码在关麦空闲 60 秒后停 Wi-Fi，启用自动浅睡眠，30 秒后休眠屏幕控制器，Mac 自动等待重连。首次按键只唤醒，桥接 ready 后再次按确认输入。完整固件门禁通过；桥接 102 项中 100 项通过、2 项跳过。新版尚未刷入，实际续航未测。证据、固件身份和验收步骤见[耗电排查](POWER.md)。
+2026-10-06 耗电排查：用户反馈 Wi-Fi 与 Mac 桥接保持连接，少量说话仍在一天内耗尽电量。按用户确认的续航优先方案，新代码在关麦空闲 60 秒后停 Wi-Fi，启用自动浅睡眠，30 秒后休眠屏幕控制器，Mac 自动等待重连。首次按键只唤醒，桥接 ready 后再次按确认输入。完整固件门禁通过；桥接 102 项中 101 项通过、1 项跳过。当日在目标 Mac 重建此版本、重装桥接命令并刷入设备，设备上报 `power_profile=idle-v1` 和 `codec_asleep=true`，确认新固件生效；实际续航仍未测。证据、固件身份和验收步骤见[耗电排查](POWER.md)。
 
 **2026-10-05 设计变更**：原设计的 BLE 键盘投递不可用。macOS 从未把 `Passport Voice` 挂载成 HID 键盘，蓝牙设置里也没有连接入口。快捷键改由桥接程序注入；设备只发送一条 `{"event":"shortcut","modifiers":N,"key":N}` 请求，不参与按键合成。BLE HID 代码已从固件移除，设备不再初始化蓝牙。
 
@@ -145,7 +145,7 @@ projects/ai-passport/voice/uninstall.sh --yes
 
 ## 自动省电
 
-当前源码默认启用。生效需要更新设备固件和 Mac 桥接，安装步骤见下文。2026-10-06 已构建此版本，尚未刷入设备。
+当前源码默认启用。生效需要更新设备固件和 Mac 桥接，安装步骤见下文。2026-10-06 已构建此版本并刷入设备，冷启动状态符合预期；各时段的省电效果和续航尚未实测。
 
 - 设备 CPU 动态频率范围为 40–160 MHz。录音期间持有 160 MHz 锁；关麦后释放，实际频率由 ESP-IDF 和外设锁决定。
 - 开启 Tickless Idle 和自动浅睡眠；按键每 20 ms 扫描。USB 主机连接时，IDF 的连接保护阻止自动入睡。
@@ -429,7 +429,7 @@ PYTHON="$(pipx environment --value PIPX_LOCAL_VENVS)/passport-voice-bridge/bin/p
 
 脚本先检查 ESP32-C3 镜像，再读取设备 `0x8000` 的分区表。只有 `0x10000` 为未加密的 factory 应用分区，且镜像能放下时才执行写入。随后运行 `verify_flash`。镜像在检查前复制到临时目录，防止检查后源文件被替换。
 
-应用镜像大小为 1,212,512 字节。2026-10-06 刷写使用本轮归档 `bbd52b10be55a7626f5dc0f2f34a13d186190b1d3fe84d642125a6810c94ae01`，应用 SHA-256 `8661b8b0af43e7ec522f92ff0374d977a69a168b8ef076d0aeac630f72f11217`；历史归档为 `8bd71c1dc3bc17e3e7c900e7c426d648f7d98c254c8b8987d246821f5098003b`。不同机器重建可能产生不同哈希。脚本不写 `0x0` 的合并镜像，不改引导、分区表或 NVS。
+当前应用镜像大小为 1,216,640 字节。2026-10-06 刷写使用归档 `ffd1247f25447f2474018e194c3a8b5a1fb06a816ce1838ebbe668163144ce45`，应用 SHA-256 `790d63372e71633744f2cd6ba19901c32143cfd085a1436cf589aee1c17c2fa8`；更早的归档为 `bbd52b10…`（1,212,512 字节）和 `8bd71c1d…`。不同机器重建可能产生不同哈希。脚本不写 `0x0` 的合并镜像，不改引导、分区表或 NVS。
 
 ## 音频与协议
 
@@ -524,5 +524,17 @@ PYTHON="$(pipx environment --value PIPX_LOCAL_VENVS)/passport-voice-bridge/bin/p
 - 卸载脚本：PASS。用桩程序在沙箱中验证 31 项，覆盖正常卸载、默认输入未改时拒绝执行、聚合设备缺失、虚拟环境缺失、回答 no 取消、回答 yes 执行、未知参数、有桥接在跑时先停止八种情况。沙箱不接触真实环境，以免删建虚拟环境影响已有的辅助功能授权。
 - 未验证：在全新 Mac 上从零运行的完整流程；在真实设备上执行一次完整卸载。
 - 删除接口的取舍：`microphone --remove` 曾作为命令行开关存在，但其“不得删除默认输入”的保护只覆盖一种情况，实测能绕过并删掉正在使用的设备，因此撤下。删除逻辑改由 `uninstall.sh` 单独调用，并在脚本最前面做预检。
+
+### 2026-10-06 省电固件在目标 Mac 重建并刷入
+
+- Apply：PASS。`apply_voice.py` 应用 17 个文件到 `voice-source`（基线 `33d3d1d9`）。此前该工作树仍是旧应用版本。
+- Gate：PASS。完整 `./tools/validate.sh` 退出码 0，布局检查 `app 1216640 / 8323072 bytes in 'factory' at 0x10000`。
+- Bridge tests：PASS。本机 102 项中 101 项通过、1 项跳过。
+- 归档：`ffd1247f25447f2474018e194c3a8b5a1fb06a816ce1838ebbe668163144ce45`，`archive_firmware.py verify` PASS。
+- Flash：PASS。只写 `0x10000` 应用分区，回读摘要一致；分区表回读与本文件记录的布局一致。
+- Boot：PASS。`Loaded app from partition at offset 0x10000`，未见 panic 或重启。应用日志按配置关闭。
+- 设备状态：PASS。USB 桥接读到 `power_profile` 为 `idle-v1`、`codec_asleep` 为 true、电量 95%、电压 4099 mV、`drops` 为 0，说明新固件在运行。
+- Bridge install：PASS。`pipx install --force -e voice/bridge` 与 `passport-voice setup` 成功；退出桥接后默认输入已还原。
+- 未验证：实际电流、续航、30/60 秒空闲后的熄屏与停无线、三键唤醒、重复开关麦、Mac 断线重连。详见[耗电排查](POWER.md#2026-10-06-目标-mac-重建与刷机)。
 
 资料：[方案分析](../VOICE-INPUT.md)、[项目状态](../README.md)、[BlackHole](https://github.com/ExistentialAudio/BlackHole)、[macOS 听写](https://support.apple.com/guide/mac-help/use-dictation-mh40584/mac)。
