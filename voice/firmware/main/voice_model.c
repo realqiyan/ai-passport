@@ -58,3 +58,9 @@ bool voice_should_blank(int64_t now_us, int64_t last_input_us,
     return buttons_ok && !mic && !audio && now_us >= last_input_us &&
            now_us - last_input_us >= INT64_C(30000000);
 }
+
+bool voice_should_idle_wifi(int64_t now_us, int64_t last_input_us,
+                            bool mic, bool audio, bool buttons_ok) {
+    return buttons_ok && !mic && !audio && now_us >= last_input_us &&
+           now_us - last_input_us >= INT64_C(60000000);
+}

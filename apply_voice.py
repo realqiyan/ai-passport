@@ -23,17 +23,28 @@ def main():
     files = {str(p.relative_to(sources)): p.read_bytes() for p in sources.rglob("*") if p.is_file()}
     defaults = subprocess.check_output(["git", "show", f"{BASELINE}:sdkconfig.defaults"], cwd=target).decode()
     defaults += "\n# Voice application\nCONFIG_LOG_DEFAULT_LEVEL_NONE=y\nCONFIG_LOG_MAXIMUM_LEVEL=0\n"
-    defaults += "CONFIG_PM_ENABLE=y\n"
+    defaults += "CONFIG_PM_ENABLE=y\nCONFIG_FREERTOS_USE_TICKLESS_IDLE=y\n"
+    defaults += "CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION=y\nCONFIG_BUTTON_PERIOD_TIME_MS=20\n"
+    defaults += "CONFIG_BT_ENABLED=n\nCONFIG_BT_NIMBLE_ENABLED=n\n"
     files["sdkconfig.defaults"] = defaults.encode()
     display = subprocess.check_output(
         ["git", "show", f"{BASELINE}:components/bsp/src/bsp_display.c"], cwd=target).decode()
     files["components/bsp/src/bsp_display.c"] = display.replace(
         "LEDC_AUTO_CLK", "LEDC_USE_XTAL_CLK").encode()
+    bsp_cmake = subprocess.check_output(
+        ["git", "show", f"{BASELINE}:components/bsp/CMakeLists.txt"], cwd=target).decode()
+    files["components/bsp/CMakeLists.txt"] = bsp_cmake.replace(
+        '"src/bsp_display.c"', '"src/bsp_display.c"\n         "src/bsp_display_power.c"').encode()
     gate = subprocess.check_output(["git", "show", f"{BASELINE}:tools/validate.sh"], cwd=target).decode()
     addition = '''    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \\
         tests/test_voice_protocol.c main/voice_protocol.c main/voice_model.c \\
         -o "${test_dir}/test_voice_protocol"
     "${test_dir}/test_voice_protocol"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror \\
+        -Itests/power_stubs -Itests/bsp_stubs -Icomponents/bsp/include \\
+        tests/test_voice_display_power.c components/bsp/src/bsp_display_power.c \\
+        -o "${test_dir}/test_voice_display_power"
+    "${test_dir}/test_voice_display_power"
 '''
     gate = gate.replace('    rm -rf "${test_dir}"', addition + '    rm -rf "${test_dir}"')
     gate = gate.replace('mktemp -d /tmp/ai-passport-firmware.XXXXXX',

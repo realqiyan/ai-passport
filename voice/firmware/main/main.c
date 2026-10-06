@@ -1,6 +1,7 @@
 #include "bsp_battery.h"
 #include "bsp_button.h"
 #include "bsp_display.h"
+#include "bsp_display_power.h"
 #include "esp_log.h"
 #include "esp_pm.h"
 #include "esp_lvgl_port.h"
@@ -67,9 +68,9 @@ static void show_message(const char *text) {
 void app_main(void) {
     /* USB is a framed binary link. Keep ESP logs out of its byte stream. */
     esp_log_level_set("*", ESP_LOG_NONE);
-    /* Keep USB and Wi-Fi connected. Automatic sleep would break USB audio. */
+    /* IDF prevents automatic sleep while a USB host is connected. */
     const esp_pm_config_t power = {
-        .max_freq_mhz = 160, .min_freq_mhz = 40, .light_sleep_enable = false,
+        .max_freq_mhz = 160, .min_freq_mhz = 40, .light_sleep_enable = true,
     };
     if (esp_pm_configure(&power) != ESP_OK)
         return;
@@ -98,6 +99,7 @@ void app_main(void) {
     int64_t battery_at = -30000000;
     int64_t last_input = esp_timer_get_time();
     bool screen_off = false;
+    bool wake_only = false;
     bool trigger_pending = false;
     int64_t temporary_started = 0;
     for (;;) {
@@ -105,7 +107,15 @@ void app_main(void) {
         bool received = xQueueReceive(inputs, &input, pdMS_TO_TICKS(screen_off ? 500 : 100)) == pdTRUE;
         if (received)
             last_input = esp_timer_get_time();
-        if (received && err == ESP_OK && input.event == BSP_BTN_CLICK) {
+        if (received && voice_wifi_idle) {
+            voice_wifi_idle = false;
+            wake_only = true;
+            show_message("Reconnecting; press OK when ready");
+        }
+        if (received && wake_only) {
+            if (input.event == BSP_BTN_CLICK || input.event == BSP_BTN_DOUBLE || input.event == BSP_BTN_LONG)
+                wake_only = false;
+        } else if (received && err == ESP_OK && input.event == BSP_BTN_CLICK) {
             if (input.button == BSP_BTN_UP) {
                 voice_temporary = false;
                 trigger_pending = false;
@@ -148,6 +158,10 @@ void app_main(void) {
             }
         }
         int64_t now = esp_timer_get_time();
+        if (voice_mic || voice_audio)
+            last_input = now;
+        voice_wifi_idle = voice_wifi_mode &&
+            voice_should_idle_wifi(now, last_input, voice_mic, voice_audio, buttons_ok);
         if (voice_temporary && (!voice_mic || !voice_bridge_ready())) {
             voice_mic = false;
             voice_temporary = false;
@@ -172,24 +186,28 @@ void app_main(void) {
         }
         if (now - battery_at >= 30000000) {
             battery = battery_ok ? bsp_battery_soc() : -1;
+            voice_battery_percent = battery;
+            voice_battery_mv = battery_ok ? bsp_battery_mv() : -1;
             battery_at = now;
         }
         if (!bsp_lvgl_lock(100))
             continue;
         bool blank = voice_should_blank(now, last_input, voice_mic, voice_audio, buttons_ok);
         if (blank && !screen_off) {
-            bsp_display_backlight(0);
-            if (lvgl_port_stop() == ESP_OK)
+            if (lvgl_port_stop() == ESP_OK && bsp_display_sleep() == ESP_OK)
                 screen_off = true;
-            else
+            else {
+                (void)lvgl_port_resume();
                 bsp_display_backlight(25);
+            }
         } else if (!blank && screen_off) {
-            if (lvgl_port_resume() == ESP_OK) {
+            if (bsp_display_wake() == ESP_OK && lvgl_port_resume() == ESP_OK) {
                 screen_off = false;
                 bsp_display_backlight(25);
                 (void)lvgl_port_task_wake(LVGL_PORT_EVENT_USER, NULL);
             }
         }
+        voice_screen_off = screen_off;
         if (screen_off) {
             bsp_lvgl_unlock();
             continue;

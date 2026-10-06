@@ -2,12 +2,73 @@ import unittest
 from unittest.mock import Mock, patch
 from types import SimpleNamespace
 from voice_bridge.audio import AudioSink, AudioBuffer
-from voice_bridge.cli import _run
+from voice_bridge.cli import _run, run
+from voice_bridge.transport import TcpLink
 from voice_bridge.protocol import STATUS, PCM
 import json
 
 
 class PowerTests(unittest.TestCase):
+    def test_wifi_reconnects_after_idle_and_uses_last_address_first(self):
+        args = SimpleNamespace(serial=None, host='192.0.2.1', discover=True)
+        attempts = []
+        def attempt(_args):
+            attempts.append(_args.discover)
+            if len(attempts) <= 5:
+                raise ConnectionError('asleep')
+            return 0
+        with patch('voice_bridge.cli._run', side_effect=attempt), patch(
+                'voice_bridge.cli.time.sleep') as pause:
+            self.assertEqual(run(args), 0)
+        self.assertEqual(attempts, [True, False, False, False, False, True])
+        self.assertEqual([call.args[0] for call in pause.call_args_list], [2, 4, 6, 8, 10])
+
+    def test_wifi_does_not_retry_bad_credentials(self):
+        args = SimpleNamespace(serial=None, host='192.0.2.1', discover=False)
+        with patch('voice_bridge.cli._run', side_effect=PermissionError('bad token')) as attempt, patch(
+                'voice_bridge.cli.time.sleep') as pause:
+            with self.assertRaises(PermissionError):
+                run(args)
+        attempt.assert_called_once()
+        pause.assert_not_called()
+
+    def test_usb_disconnect_keeps_existing_exit_behavior(self):
+        args = SimpleNamespace(serial='test')
+        with patch('voice_bridge.cli._run', side_effect=ConnectionError('unplugged')) as attempt:
+            with self.assertRaises(ConnectionError):
+                run(args)
+        attempt.assert_called_once()
+
+    def test_stop_during_wifi_reconnect_wait_exits(self):
+        args = SimpleNamespace(serial=None, host='192.0.2.1')
+        with patch('voice_bridge.cli._run', side_effect=TimeoutError('offline')), patch(
+                'voice_bridge.cli.time.sleep', side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                run(args)
+
+    def test_network_unreachable_is_a_connection_error(self):
+        with patch('voice_bridge.transport.socket.create_connection', side_effect=OSError('network down')):
+            with self.assertRaisesRegex(ConnectionError, 'Wi-Fi connection failed'):
+                TcpLink('192.0.2.1')
+
+    def test_partial_connection_failure_closes_socket(self):
+        channel = Mock()
+        channel.setsockopt.side_effect = OSError('network down')
+        with patch('voice_bridge.transport.socket.create_connection', return_value=channel):
+            with self.assertRaises(ConnectionError):
+                TcpLink('192.0.2.1')
+        channel.close.assert_called_once()
+
+    def test_network_io_errors_allow_reconnect(self):
+        link = TcpLink.__new__(TcpLink)
+        link.socket = Mock()
+        link.socket.recv.side_effect = OSError('network down')
+        link.socket.sendall.side_effect = OSError('network down')
+        with self.assertRaises(ConnectionError):
+            link.read()
+        with self.assertRaises(ConnectionError):
+            link.write(b'test')
+
     def sink(self):
         sink = AudioSink.__new__(AudioSink)
         sink.stream = Mock(active=False)

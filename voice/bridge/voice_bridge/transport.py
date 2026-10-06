@@ -3,21 +3,32 @@ import time
 
 class TcpLink:
     def __init__(self, host):
-        self.socket = socket.create_connection((host, 8765), timeout=3)
-        self.socket.settimeout(0.5)
-        self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        self.socket = None
+        try:
+            self.socket = socket.create_connection((host, 8765), timeout=3)
+            self.socket.settimeout(0.5)
+            self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except OSError as error:
+            if self.socket is not None:
+                self.socket.close()
+            raise ConnectionError(f"Wi-Fi connection failed: {error}") from error
 
     def read(self):
         try:
             data = self.socket.recv(4096)
         except socket.timeout:
             return b""
+        except OSError as error:
+            raise ConnectionError(f"Wi-Fi read failed: {error}") from error
         if not data:
             raise ConnectionError("Device disconnected")
         return data
 
     def write(self, data):
-        self.socket.sendall(data)
+        try:
+            self.socket.sendall(data)
+        except OSError as error:
+            raise ConnectionError(f"Wi-Fi write failed: {error}") from error
 
     def close(self):
         self.socket.close()

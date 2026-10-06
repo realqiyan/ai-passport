@@ -24,6 +24,8 @@
 #define VOICE_PORT 8765
 _Atomic bool voice_mic, voice_audio, voice_wifi_mode;
 _Atomic bool voice_temporary;
+_Atomic bool voice_wifi_idle, voice_screen_off, voice_codec_asleep;
+_Atomic int voice_battery_percent = -1, voice_battery_mv = -1;
 _Atomic uint32_t voice_session;
 _Atomic int voice_error;
 static _Atomic uint32_t ready_usb, ready_wifi;
@@ -62,6 +64,7 @@ static char result[64] = "boot";
 static uint32_t ack_sequence;
 static bool wifi_started;
 static bool config_changed;
+static int64_t last_status_sent;
 bool voice_bridge_ready(void) {
     uint32_t last = voice_wifi_mode ? ready_wifi : ready_usb;
     uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
@@ -107,7 +110,7 @@ static void close_client(void) {
     }
 }
 static void update_wifi(void) {
-    bool wanted = voice_wifi_mode && config.ssid[0] && config.token[0];
+    bool wanted = voice_wifi_mode && !voice_wifi_idle && config.ssid[0] && config.token[0];
     if (config_changed || !wanted) {
         wifi_wanted = false;
         close_client();
@@ -223,19 +226,27 @@ static bool write_frame(bool wifi, uint8_t type, uint32_t seq, const void *data,
     return done == n;
 }
 static void status(bool wifi) {
-    char json[512], ip[32];
+    char json[768], ip[32];
     voice_ip(ip, sizeof(ip));
     int n = snprintf(json, sizeof(json),
                      "{\"ack\":%lu,\"result\":\"%s\",\"mic\":%s,\"audio\":%s,\"bridge\":%s,"
                      "\"temporary\":%s,\"session\":%lu,\"transport\":\"%s\",\"ip\":\"%s\",\"error\":%d,\"drops\":%lu,"
-                     "\"modifiers\":%u,\"key\":%u,\"rate\":16000,\"channels\":1,\"bits\":16}",
+                     "\"modifiers\":%u,\"key\":%u,\"rate\":16000,\"channels\":1,\"bits\":16,"
+                     "\"power_profile\":\"idle-v1\",\"battery_pct\":%d,\"battery_mv\":%d,"
+                     "\"uptime_s\":%lu,\"screen_off\":%s,\"codec_asleep\":%s,\"wifi_idle\":%s}",
                      (unsigned long)ack_sequence, result, voice_mic ? "true" : "false",
                      voice_audio ? "true" : "false", voice_bridge_ready() ? "true" : "false",
                      voice_temporary ? "true" : "false", (unsigned long)voice_session,
                      voice_wifi_mode ? "wifi" : "usb", ip,
-                     voice_error, (unsigned long)drops, voice_modifier(), voice_key());
-    if (n > 0 && n < (int)sizeof(json) && !write_frame(wifi, VP_STATUS, 0, json, (size_t)n)) {
-        if (wifi)
+                     voice_error, (unsigned long)drops, voice_modifier(), voice_key(),
+                     voice_battery_percent, voice_battery_mv,
+                     (unsigned long)(esp_timer_get_time() / 1000000),
+                     voice_screen_off ? "true" : "false", voice_codec_asleep ? "true" : "false",
+                     voice_wifi_idle ? "true" : "false");
+    if (n > 0 && n < (int)sizeof(json)) {
+        if (write_frame(wifi, VP_STATUS, 0, json, (size_t)n))
+            last_status_sent = esp_timer_get_time();
+        else if (wifi)
             close_client();
         else
             ready_usb = 0;
@@ -391,7 +402,7 @@ static void transport_task(void *arg) {
     (void)arg;
     uint8_t input[256];
     audio_chunk_t chunk;
-    int64_t last_status = 0, accepted_at = 0;
+    int64_t accepted_at = 0;
     for (;;) {
         int n = usb_serial_jtag_read_bytes(input, sizeof(input), 0);
         if (n > 0)
@@ -431,14 +442,13 @@ static void transport_task(void *arg) {
             }
         }
         int64_t now = esp_timer_get_time();
-        if (now - last_status >= 500000) {
+        if (now - last_status_sent >= (voice_mic ? 500000 : 1500000)) {
             if (ready_usb > 0)
                 status(false);
             if (client >= 0 && authenticated)
                 status(true);
-            last_status = now;
         }
-        vTaskDelay(pdMS_TO_TICKS(voice_mic ? 2 : 20));
+        vTaskDelay(pdMS_TO_TICKS(voice_mic ? 2 : voice_wifi_idle ? 100 : 20));
     }
 }
 static void audio_task(void *arg) {
@@ -452,6 +462,7 @@ static void audio_task(void *arg) {
                 esp_err_t e = bsp_audio_sleep();
                 if (e != ESP_OK)
                     voice_error = e;
+                voice_codec_asleep = e == ESP_OK;
                 (void)esp_pm_lock_release(audio_power_lock);
                 opened = false;
             }
@@ -481,6 +492,7 @@ static void audio_task(void *arg) {
                 continue;
             }
             opened = true;
+            voice_codec_asleep = false;
             voice_error = 0;
         }
         esp_err_t err = bsp_audio_read(chunk.pcm, sizeof(chunk.pcm));
@@ -515,8 +527,15 @@ esp_err_t voice_runtime_init(void) {
     }
     shortcut_mod = config.modifiers;
     shortcut_key = config.key;
+    /* Set a known codec standby state even before the first recording. */
+    esp_err_t err = bsp_audio_init();
+    if (err == ESP_OK)
+        err = bsp_audio_sleep();
+    if (err != ESP_OK)
+        return err;
+    voice_codec_asleep = true;
     usb_serial_jtag_driver_config_t usb = {.tx_buffer_size = 2048, .rx_buffer_size = 2048};
-    esp_err_t err = usb_serial_jtag_driver_install(&usb);
+    err = usb_serial_jtag_driver_install(&usb);
     if (err != ESP_OK)
         return err;
     err = esp_netif_init();
@@ -532,6 +551,9 @@ esp_err_t voice_runtime_init(void) {
     if (err != ESP_OK)
         return err;
     err = esp_wifi_set_storage(WIFI_STORAGE_RAM);
+    if (err != ESP_OK)
+        return err;
+    err = esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
     if (err != ESP_OK)
         return err;
     err = esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event, NULL);

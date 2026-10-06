@@ -70,6 +70,15 @@ int main(void) {
     assert(!voice_should_blank(30000000, 0, false, true, true));
     assert(!voice_should_blank(30000000, 0, false, false, false));
     assert(!voice_should_blank(0, 1, false, false, true));
+    assert(!voice_should_idle_wifi(59999999, 0, false, false, true));
+    assert(voice_should_idle_wifi(60000000, 0, false, false, true));
+    assert(!voice_should_idle_wifi(60000000, 1, false, false, true));
+    assert(!voice_should_idle_wifi(60000000, 0, true, false, true));
+    assert(!voice_should_idle_wifi(60000000, 0, false, true, true));
+    assert(!voice_should_idle_wifi(60000000, 0, false, false, false));
+    assert(!voice_should_idle_wifi(0, 1, false, false, true));
+    /* An input wake starts another full idle interval. */
+    assert(!voice_should_idle_wifi(60000001, 60000000, false, false, true));
     uint8_t discovery_request[] = "PASSPORT_VOICE_DISCOVER_V1 0123456789abcdef0123456789abcdef";
     const char discovery_expected[] = "PASSPORT_VOICE_V1 0123456789abcdef0123456789abcdef";
     uint8_t discovery_response[80];

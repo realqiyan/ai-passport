@@ -176,7 +176,24 @@ def graceful_termination():
 def run(args):
     """Run the bridge. SIGTERM and SIGHUP run the same cleanup as Ctrl-C."""
     with graceful_termination():
-        return _run(args)
+        automatic = getattr(args, "discover", False)
+        failures = 0
+        while True:
+            try:
+                return _run(args)
+            except PermissionError:
+                raise
+            except (ConnectionError, TimeoutError):
+                if args.serial:
+                    raise
+                if failures == 0:
+                    print("Wi-Fi disconnected. Waiting for the device; press a device key to wake it.",
+                          file=sys.stderr, flush=True)
+                failures += 1
+                # Use the last address first. Periodic discovery handles DHCP changes.
+                if automatic and getattr(args, "host", None):
+                    args.discover = failures % 5 == 0
+                time.sleep(min(2 * failures, 10))
 
 def _run(args):
     from .audio import AudioSink
@@ -248,7 +265,9 @@ def _run(args):
                             mic_active = desired
                         except RuntimeError as error:
                             print(f"Default input unchanged: {error}", file=sys.stderr, flush=True)
-                    brief = {k: status.get(k) for k in ("mic", "audio", "bridge", "error", "drops")}
+                    brief = {k: status.get(k) for k in (
+                        "mic", "audio", "bridge", "error", "drops", "power_profile",
+                        "battery_pct", "battery_mv", "screen_off", "codec_asleep")}
                     if brief != latest:
                         print(json.dumps(brief), flush=True)
                         latest = brief
