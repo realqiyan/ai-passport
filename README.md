@@ -4,9 +4,11 @@
 
 目标：使用设备自带麦克风，通过 USB 或 Wi-Fi 向 Mac 语音输入法传送音频，并用设备按键触发输入。
 
-入口：[语音应用与安装说明](voice/README.md)、[耗电排查](voice/POWER.md)、[开发手册](DEVELOPMENT.md)、[稳定性与迁移审查](voice/REVIEW.md)、[方案分析](VOICE-INPUT.md)。
+入口：[语音应用与安装说明](voice/README.md)、[耗电排查](voice/POWER.md)、[自组设备硬件选型](voice/HARDWARE.md)、[开发手册](DEVELOPMENT.md)、[稳定性与迁移审查](voice/REVIEW.md)、[方案分析](VOICE-INPUT.md)。
 
 ## 当前状态
+
+2026-10-07 用户提出购买开发板组装语音输入设备，并增加确认、删除等按键。已核对 Cardputer-Adv、StickS3 与裸板方案；采购清单和省电条件见[硬件选型](voice/HARDWARE.md)。这是建议，型号尚未确认，未进行购买或移植。
 
 设备独立语音应用和 Mac 桥接已实现。音频通过 BlackHole 2ch 和聚合设备 `Passport Mic` 送入输入法；快捷键由 Mac 注入。此前在 Apple Silicon Mac 上实测 USB 与 Wi-Fi 出字，拔掉 USB 后电池供电的 Wi-Fi 输入也通过。
 
@@ -55,6 +57,7 @@ ESP32-C3 的 USB Serial/JTAG 在主机打开串口时可能复位设备。本设
 
 ## 未决问题与下一步
 
+- 自组设备先确定外形与按键方案，再选一台原型验证。现有 Mac 桥接可复用，确认、删除事件和新板驱动需要适配；依据见[硬件选型](voice/HARDWARE.md)。
 - Mac 桥接命令已更新到日志版本（2026-10-07 重装，可编辑安装）。下一步重启桥接，验证待机时日志静默、恢复后等待汇总和重定向文件的时间戳。保存方法见[桥接日志](voice/README.md#桥接日志)。
 - 第一版省电固件已于 2026-10-06 刷入，第二版 `idle-v2` 已于 2026-10-07 在目标 Mac 重建、更新桥接并刷入，设备状态字段确认新固件在运行。下一步验收 60 秒深睡、上键唤醒、USB 兼容和隔夜耗电。恢复速度须用实机测量。详细记录入口为[耗电排查](voice/POWER.md#2026-10-07-二次优化)。
 - pipx 迁移问题已修复，安装与清理流程已统一，默认状态已移至用户数据目录。下一步在 Mac 验证旧令牌迁移、完整卸载和 USB/Wi-Fi 出字；依据见[修复记录](voice/REVIEW.md#pipx-迁移修复2026-10-05)。
