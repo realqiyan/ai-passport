@@ -13,7 +13,7 @@ class PowerTests(unittest.TestCase):
         args = SimpleNamespace(serial=None, host='192.0.2.1', discover=True)
         attempts = []
         retry_modes = []
-        def attempt(_args):
+        def attempt(_args, **kwargs):
             attempts.append(_args.discover)
             retry_modes.append(getattr(_args, '_reconnecting', False))
             if len(attempts) <= 5:

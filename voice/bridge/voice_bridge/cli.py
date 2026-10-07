@@ -16,6 +16,7 @@ from .protocol import COMMAND, PCM, STATUS, Parser, encode
 from .shortcut import Injector, trusted
 from .transport import SerialLink, TcpLink
 from .discovery import discover_host
+from .log import display_value, format_status, log, timestamp
 
 MODIFIERS = {"ctrl": 1, "shift": 2, "alt": 4, "cmd": 8}
 KEYS = {"space": 0x2c, "enter": 0x28, "escape": 0x29, "tab": 0x2b}
@@ -109,8 +110,6 @@ def open_session(args):
             if not args.host_file.is_file() or not args.host_file.read_text().strip():
                 raise
             args.host = args.host_file.read_text().strip()
-            print(f"Discovery timed out; trying saved address {args.host}.", file=sys.stderr)
-        print(f"Wi-Fi device: {args.host}", file=sys.stderr)
     link = SerialLink(args.serial) if args.serial else TcpLink(
         args.host, connect_timeout=1 if reconnecting else 3)
     session = Session(link)
@@ -145,9 +144,9 @@ def configure(args):
             save_token(args.token_file, token)
             fields.update(ssid=args.wifi_ssid, password=password, token=token)
         session.request("configure", **fields)
-        print("Configuration saved." + (" Set the same shortcut in macOS." if fields else ""))
+        log("Configuration saved." + (" Set the same shortcut in macOS." if fields else ""))
         if token:
-            print(f"Token saved at {args.token_file}. Stop the microphone, then press DOWN for Wi-Fi.")
+            log(f"Token saved at {args.token_file}. Stop the microphone, then press DOWN for Wi-Fi.")
     finally:
         session.link.close()
 
@@ -180,17 +179,33 @@ def run(args):
     with graceful_termination():
         automatic = getattr(args, "discover", False)
         failures = 0
+        waiting_since = None
+        disconnected_at = None
+
+        def connected():
+            nonlocal failures, waiting_since, disconnected_at
+            details = ""
+            if waiting_since is not None:
+                elapsed = time.monotonic() - waiting_since
+                details = (f"；等待={elapsed:.1f} s；重试={failures} 次"
+                           f"；等待开始={disconnected_at}")
+            failures = 0
+            waiting_since = disconnected_at = None
+            args._reconnecting = False
+            args.discover = automatic
+            return details
+
         while True:
             try:
-                return _run(args)
+                return _run(args, on_connected=connected)
             except PermissionError:
                 raise
             except (ConnectionError, TimeoutError):
                 if args.serial:
                     raise
-                if failures == 0:
-                    print("Wi-Fi disconnected. Waiting for the device; press UP to wake it.",
-                          file=sys.stderr, flush=True)
+                if waiting_since is None:
+                    waiting_since = time.monotonic()
+                    disconnected_at = timestamp()
                 failures += 1
                 args._reconnecting = True
                 # Use the last address first. Periodic discovery handles DHCP changes.
@@ -198,7 +213,7 @@ def run(args):
                     args.discover = failures % 2 == 0
                 time.sleep(1)
 
-def _run(args):
+def _run(args, *, on_connected=None):
     from .audio import AudioSink
     sink = None
     session = None
@@ -213,13 +228,15 @@ def _run(args):
         sink = AudioSink(args.output)
         switcher = InputSwitcher(args.mic_device) if args.mic_device else None
         injector = Injector()
-        if not trusted():
-            print("Warning: macOS does not trust this process for Accessibility, so the "
-                  "device cannot send the shortcut.", file=sys.stderr)
-            print(f"Allow the terminal application, or {sys.executable}, in System Settings > "
-                  "Privacy & Security > Accessibility.", file=sys.stderr)
         session.request("ready", active=True)
-        print("Audio output ready. Press OK for temporary input, then OK again to stop. UP keeps the microphone on.")
+        details = on_connected() if on_connected is not None else ""
+        address = args.serial if args.serial else getattr(args, "host", "unknown")
+        log(f"连接已建立：{expected} {address}{details}", file=sys.stderr)
+        if not trusted():
+            log("Warning: macOS does not trust this process for Accessibility, so the "
+                  "device cannot send the shortcut.", file=sys.stderr)
+            log(f"Allow the terminal application, or {sys.executable}, in System Settings > "
+                  "Privacy & Security > Accessibility.", file=sys.stderr)
         heartbeat = time.monotonic()
         received = heartbeat
         latest = None
@@ -234,8 +251,11 @@ def _run(args):
                 elif frame.kind == STATUS:
                     status = json.loads(frame.payload)
                     if status.get("event") == "shortcut":
+                        event_details = " | ".join(
+                            f"{name}={display_value(value)}" for name, value in status.items())
                         if status.get("temporary") and status.get("ending"):
                             if temporary_session != status.get("session"):
+                                log(f"忽略过期结束快捷键 | {event_details}")
                                 continue
                             temporary_session = None
                         try:
@@ -243,16 +263,16 @@ def _run(args):
                                 raise RuntimeError("macOS does not trust this process for Accessibility")
                             if switcher and not status.get("ending"):
                                 if switcher.set(True):
-                                    print(f"Default input: {switcher.name}", flush=True)
+                                    log(f"Default input: {switcher.name}")
                                 mic_active = True
                             modifiers, key = getattr(args, "shortcut", None) or (
                                 status.get("modifiers"), status.get("key"))
                             injector.send(modifiers, key)
                             if status.get("temporary") and not status.get("ending"):
                                 temporary_session = status.get("session")
-                            print("Shortcut sent", flush=True)
+                            log(f"快捷键已发送 | {event_details} | 实际修饰键={modifiers} | 实际键码={key}")
                         except (RuntimeError, ValueError) as error:
-                            print(f"Shortcut not sent: {error}", file=sys.stderr, flush=True)
+                            log(f"Shortcut not sent: {error} | {event_details}", file=sys.stderr)
                             if status.get("temporary") and not status.get("ending"):
                                 session.send("stop", session=status.get("session"))
                         continue
@@ -265,18 +285,15 @@ def _run(args):
                         desired = bool(status.get("mic"))
                         try:
                             if switcher.set(desired):
-                                print(f"Default input: {switcher.name}" if desired
-                                      else "Default input restored", flush=True)
+                                log(f"Default input: {switcher.name}" if desired
+                                    else "Default input restored")
                             mic_active = desired
                         except RuntimeError as error:
-                            print(f"Default input unchanged: {error}", file=sys.stderr, flush=True)
-                    brief = {k: status.get(k) for k in (
-                        "mic", "audio", "bridge", "error", "drops", "power_profile",
-                        "battery_pct", "battery_mv", "screen_off", "codec_asleep",
-                        "usb_host", "deep_wakes", "sleep_error")}
-                    if brief != latest:
-                        print(json.dumps(brief), flush=True)
-                        latest = brief
+                            log(f"Default input unchanged: {error}", file=sys.stderr)
+                    snapshot = {key: value for key, value in status.items() if key not in ("ack", "uptime_s")}
+                    if snapshot != latest:
+                        log(format_status(status))
+                        latest = snapshot
             now = time.monotonic()
             if now - received > 3:
                 raise TimeoutError("No device frames for 3 seconds")
@@ -290,7 +307,7 @@ def _run(args):
             try:
                 switcher.set(False)
             except Exception as error:
-                print(f"Default input restore failed: {error}", file=sys.stderr)
+                log(f"Default input restore failed: {error}", file=sys.stderr)
         try:
             if session:
                 try:
@@ -309,9 +326,9 @@ def serial_port(explicit):
         return explicit
     found = sorted(glob.glob("/dev/cu.usbmodem*"))
     if not found:
-        raise SystemExit("没有找到 /dev/cu.usbmodem* 串口。插好数据线，或直接给出串口路径。")
+        raise SystemExit(f"[{timestamp()}] 没有找到 /dev/cu.usbmodem* 串口。插好数据线，或直接给出串口路径。")
     if len(found) > 1:
-        raise SystemExit("找到多个串口，请指定一个：" + " ".join(found))
+        raise SystemExit(f"[{timestamp()}] 找到多个串口，请指定一个：" + " ".join(found))
     return found[0]
 
 def warn_missing_microphone():
@@ -319,10 +336,10 @@ def warn_missing_microphone():
     try:
         report = microphone.describe(CoreAudio())
     except Exception as exc:
-        print(f"警告：无法读取音频设备状态（{exc}）。", file=sys.stderr)
+        log(f"警告：无法读取音频设备状态（{exc}）。", file=sys.stderr)
         return
     if not any(line.startswith(f"{microphone.DEFAULT_NAME}: present") for line in report):
-        print(f"警告：找不到 {microphone.DEFAULT_NAME} 聚合设备，输入法收不到声音。"
+        log(f"警告：找不到 {microphone.DEFAULT_NAME} 聚合设备，输入法收不到声音。"
               f"修复：passport-voice setup", file=sys.stderr)
 
 def launch(args):
@@ -332,16 +349,16 @@ def launch(args):
         args.serial = serial_port(args.address)
         args.host = None
         args.discover = False
-        print(f"USB 链路：{args.serial}", file=sys.stderr)
-        print("打开串口会让设备复位一次，屏幕闪一下属正常现象。", file=sys.stderr)
+        log(f"USB 链路：{args.serial}", file=sys.stderr)
+        log("打开串口会让设备复位一次，屏幕闪一下属正常现象。", file=sys.stderr)
     else:
         args.serial = None
         args.host = args.address
         args.discover = args.address is None
         if args.host:
-            print(f"Wi-Fi 链路：{args.host}", file=sys.stderr)
+            log(f"Wi-Fi 链路：{args.host}", file=sys.stderr)
         else:
-            print("正在查找局域网中的 Passport，请先在设备上选择 Wi-Fi 模式。", file=sys.stderr)
+            log("正在查找局域网中的 Passport，请先在设备上选择 Wi-Fi 模式。", file=sys.stderr)
     return run(args)
 
 
@@ -395,26 +412,26 @@ def main(argv=None):
     try:
         if args.command == "devices":
             import sounddevice as sd
-            print(sd.query_devices())
+            log(sd.query_devices())
         elif args.command == "inputs":
             import sounddevice as sd
             hal = CoreAudio()
             current = hal.name(hal.default_input())
             for device in sd.query_devices():
                 if device["max_input_channels"]:
-                    print(f"{'*' if device['name'] == current else ' '} {device['name']}")
+                    log(f"{'*' if device['name'] == current else ' '} {device['name']}")
         elif args.command == "ports":
             from serial.tools import list_ports
             for port in list_ports.comports():
-                print(f"{port.device}: {port.description}")
+                log(f"{port.device}: {port.description}")
         elif args.command == "microphone":
             hal = CoreAudio()
             if args.create:
                 created = microphone.create(hal, microphone.AggregateHal(),
                                             args.name, subdevice=args.subdevice)
-                print(f"Created {args.name} (device {created})")
+                log(f"Created {args.name} (device {created})")
             for line in microphone.describe(hal, args.name, args.subdevice):
-                print(line)
+                log(line)
         elif args.command == "configure":
             configure(args)
         elif args.command == "setup":
@@ -427,9 +444,10 @@ def main(argv=None):
         else:
             run(args)
     except KeyboardInterrupt:
+        log("程序已停止。", file=sys.stderr)
         return 0
     except Exception as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        log(f"Error: {exc}", file=sys.stderr)
         return 1
     return 0
 

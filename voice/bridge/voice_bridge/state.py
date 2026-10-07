@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+from .log import log
 
 FILES = ("token", "host")
 
@@ -53,4 +54,4 @@ def migrate(destination, source):
                 os.link(temporary, new)
             finally:
                 temporary.unlink(missing_ok=True)
-        print(f"Copied {source / new.name} to {new}; original retained")
+        log(f"Copied {source / new.name} to {new}; original retained")

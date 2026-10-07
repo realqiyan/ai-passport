@@ -9,6 +9,7 @@ import time
 
 from . import microphone, state
 from .hostaudio import CoreAudio
+from .log import log
 
 
 def require_macos():
@@ -30,10 +31,10 @@ def setup(state_dir, legacy_dir=None):
     if device is None:
         microphone.create(hal, microphone.AggregateHal())
     for line in microphone.describe(hal):
-        print(line)
-    print(f"State directory: {state_dir}")
-    print(f"Allow your terminal or {sys.executable} in macOS Accessibility, then restart the bridge.")
-    print("Select Passport Mic in your input method. Start with passport-voice usb or wifi.")
+        log(line)
+    log(f"State directory: {state_dir}")
+    log(f"Allow your terminal or {sys.executable} in macOS Accessibility, then restart the bridge.")
+    log("Select Passport Mic in your input method. Start with passport-voice usb or wifi.")
 
 
 def bridge_processes(legacy_dir=None):
@@ -90,12 +91,12 @@ def cleanup(state_dir, legacy_dir=None, *, yes=False):
             raise RuntimeError("Passport Mic has an unrelated UID; cleanup stopped")
         if device == hal.default_input() and not owned:
             raise RuntimeError("Passport Mic is the default input; select another input before cleanup")
-    print("\n".join(report))
-    print(f"Stop this bridge, remove Passport Mic, and delete token/host in {state_dir}.")
+    log("\n".join(report))
+    log(f"Stop this bridge, remove Passport Mic, and delete token/host in {state_dir}.")
     if legacy_dir is not None:
-        print(f"Also delete legacy token/host in {legacy_dir}.")
+        log(f"Also delete legacy token/host in {legacy_dir}.")
     if not yes and input("Type yes to continue: ") != "yes":
-        print("Cancelled; no changes made.")
+        log("Cancelled; no changes made.")
         return False
     for pid in owned:
         try:
@@ -123,5 +124,5 @@ def cleanup(state_dir, legacy_dir=None, *, yes=False):
             folder.rmdir()
         except OSError:
             pass  # Keep unknown files.
-    print("Cleanup complete. BlackHole, Accessibility permissions and device NVS were retained.")
+    log("Cleanup complete. BlackHole, Accessibility permissions and device NVS were retained.")
     return True
