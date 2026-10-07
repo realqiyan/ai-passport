@@ -198,7 +198,15 @@ passport-voice wifi 2>&1 | tee -a passport-voice.log
 
 可编辑 pipx 安装在更新源码后重启桥接即可使用新格式。普通安装先按[安装与更新](#pipx-安装与更新)重装。此次修改仅涉及 Mac 桥接源码。
 
-验证：在 `voice/bridge/` 执行 `../../.venv/bin/python -m unittest discover -s tests`，116 项中 114 项通过、2 项因 Linux 缺少 macOS 框架跳过。测试覆盖断线静默、每次恢复单独汇总、就绪后才输出连接日志、全部状态与扩展字段、心跳去重、快捷键字段及多行时间戳。Mac 实际断线、恢复及文件输出仍待验收。
+验证：桥接测试需要桥接依赖，用 pipx 环境的解释器执行。项目不再创建虚拟环境，旧的 `../../.venv` 路径已失效：
+
+```bash
+PYTHONPATH=projects/ai-passport/voice/bridge \
+  "$(pipx environment --value PIPX_LOCAL_VENVS)/passport-voice-bridge/bin/python" \
+  -m unittest discover -s projects/ai-passport/voice/bridge/tests
+```
+
+2026-10-07 在 macOS 本机 116 项全部通过，无跳过；同日 Linux 上 116 项中 114 项通过、2 项因缺少 macOS 框架跳过。测试覆盖断线静默、每次恢复单独汇总、就绪后才输出连接日志、全部状态与扩展字段、心跳去重、快捷键字段及多行时间戳。Mac 实际断线、恢复及文件输出仍待验收。
 
 ## 迁移到其他 Mac
 
@@ -440,10 +448,12 @@ cd projects/ai-passport/voice-source
 
 `apply_voice.py` 生成的门禁在 macOS 上把 `-Wl,--gc-sections` 换成 `-Wl,-dead_strip`，无需机器专用的临时包装脚本。构建还需要项目 [requirements-dev.txt](../requirements-dev.txt) 中的 CMake 与 Ninja。Linux 的 OpenOCD 若缺少 libusb，按相邻[开发手册](../DEVELOPMENT.md)加载项目内的库路径。构建环境不会把 Wi-Fi 密码编入镜像。
 
-Bridge 测试不依赖 Mac 音频设备：
+Bridge 测试不依赖 Mac 音频设备，但需要桥接依赖。用 pipx 环境的解释器：
 
 ```bash
-PYTHONPATH=projects/ai-passport/voice/bridge python3 -m unittest discover -s projects/ai-passport/voice/bridge/tests -v
+PYTHONPATH=projects/ai-passport/voice/bridge \
+  "$(pipx environment --value PIPX_LOCAL_VENVS)/passport-voice-bridge/bin/python" \
+  -m unittest discover -s projects/ai-passport/voice/bridge/tests -v
 ```
 
 ## 固件安装
@@ -587,5 +597,14 @@ PYTHON="$(pipx environment --value PIPX_LOCAL_VENVS)/passport-voice-bridge/bin/p
 - Flash：PASS。只写 `0x10000` 应用分区，回读摘要一致。
 - 设备状态：PASS。USB 桥接读到 `power_profile` 为 `idle-v2`、`codec_asleep` 为 true、`usb_host` 为 true、`deep_wakes` 为 0、`sleep_error` 为 0、电量 50%、电压 3943 mV，说明新固件在运行。
 - 未验证：深睡与上键唤醒、恢复时间、USB 与 Wi-Fi 出字、重复开关麦、整机深睡电流和隔夜耗电。验收步骤见[耗电排查的待办清单](POWER.md#2026-10-07-二次优化)。
+
+### 2026-10-07 桥接日志版本重装与固件重刷
+
+- 变更范围：自上一次刷写以来只有 `d0ee12c` 一项提交，它只改 Mac 桥接（新增 `bridge/voice_bridge/log.py`，改动 `cli.py`、`lifecycle.py`、`state.py` 与 `tests/test_logging.py`），未改固件。`diff -rq` 比较 `voice/firmware/{main,components,tests}` 与 `voice-source/` 同名目录，无差异文件，说明工作树与维护源码一致。
+- Bridge install：PASS。`voice/install.sh` 重装可编辑安装，解释器保持 Python 3.14.7；安装后 `voice_bridge` 解析到 `voice/bridge`，新模块 `log.py` 已生效。`setup` 报告 `BlackHole 2ch`（设备 93）与 `Passport Mic`（设备 66）存在，默认输入为 `MacBook Pro麦克风`，状态目录为 `~/Library/Application Support/passport-voice`。
+- Bridge tests：PASS。macOS 本机 116 项全部通过，无跳过。上一轮记录的 105 项早于 `d0ee12c`；此前出现的跳过项只在 Linux 缺 macOS 框架时发生。
+- Flash：PASS。按用户确认重刷同一镜像。归档 `efc230fa…`，应用镜像 1,220,752 字节，SHA-256 `266235e1…`，与已刷的 `idle-v2` 镜像相同；只写 `0x10000`，`verify_flash` 摘要一致；设备 MAC 为 `98:c3:77:f5:72:4c`。
+- Boot：PASS。复位后二级引导日志显示 `Loaded app from partition at offset 0x10000`，未见 panic；分区表回读与记录一致（`factory` 在 `0x10000`，3072K）。
+- 未验证：Mac 上的实际断线静默、恢复汇总与重定向文件时间戳；设备端 `power_profile` 确认、深睡唤醒、USB 与 Wi-Fi 出字本轮未做。
 
 资料：[方案分析](../VOICE-INPUT.md)、[项目状态](../README.md)、[BlackHole](https://github.com/ExistentialAudio/BlackHole)、[macOS 听写](https://support.apple.com/guide/mac-help/use-dictation-mh40584/mac)。
