@@ -70,7 +70,7 @@ Sense 版本把数字麦克风放在相机扩展板上，插装方便。但官�
 
 确认可能表示结束听写、确认候选或发送消息，不能默认都用 Enter。删除整段刚识别的内容需要输入法接口或可靠的文本范围；单个 Backspace 不提供该能力。
 
-现有 Mac 音频桥接和无线协议可复用。设备固件必须适配 ESP32-S3、音频、按键、显示及电源驱动；Passport 的 ESP32-C3 镜像不能直接刷到这些设备。现有 Mac 键码表支持 Enter、Esc，尚未包含 Backspace。还需把录音快捷键覆盖与确认、删除事件分开，避免启动选项 `--shortcut` 把所有按键都改成录音快捷键。代码依据：[桥接事件处理](bridge/voice_bridge/cli.py)、[键码映射](bridge/voice_bridge/shortcut.py)。
+现有 Mac 音频桥接和无线协议可复用。设备固件必须适配 ESP32-S3、音频、按键、显示及电源驱动；Passport 的 ESP32-C3 镜像不能直接刷到这些设备。2026-10-07 三键版本已补齐 Backspace、Up、Down，保留 Enter 和 Esc。普通按键使用独立的 `key` 事件；`--shortcut` 只覆盖录音控制，不覆盖普通按键。现有 Passport 的已确认布局见[设备操作](README.md#设备操作)。新板仍需适配按键与驱动。代码依据：[桥接事件处理](bridge/voice_bridge/cli.py)、[键码映射](bridge/voice_bridge/shortcut.py)。
 
 ## 省电和验证
 

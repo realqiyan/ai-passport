@@ -45,9 +45,6 @@ int main(void) {
     assert(voice_shortcut_valid(15, 0x45));
     assert(!voice_shortcut_valid(0, 0x46));
     assert(!voice_shortcut_valid(0, 0));
-    for (int a = 0; a < 2; a++)
-        for (int b = 0; b < 2; b++)
-            assert(voice_can_trigger(a, b) == (a && b));
     const uint8_t nested[] = "[[[[[[[[[0]]]]]]]]]";
     assert(!voice_json_depth_valid(nested, sizeof(nested) - 1));
     const uint8_t quoted[] = "{\"op\":\"{[test]}\"}";
@@ -91,5 +88,5 @@ int main(void) {
     assert(!vp_discovery_reply(discovery_request, sizeof(discovery_request) - 1, discovery_response, 80));
     discovery_request[0] = '!';
     assert(!vp_discovery_reply(discovery_request, sizeof(discovery_request) - 1, discovery_response, 80));
-    puts("Voice protocol, trigger, discovery and idle tests: PASS");
+    puts("Voice protocol, discovery and idle tests: PASS");
 }

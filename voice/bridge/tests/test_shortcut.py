@@ -39,6 +39,13 @@ class ShortcutTests(unittest.TestCase):
                          [(59, True), (56, True), (9, True), (9, False), (56, False), (59, False)])
         self.assertEqual([flags for _, flags in quartz.posted], [1, 3, 3, 3, 1, 0])
 
+    def test_keyboard_keys_press_and_release_without_modifiers(self):
+        for usage, code in ((0x28, 36), (0x2a, 51), (0x52, 126), (0x51, 125)):
+            with self.subTest(usage=usage):
+                quartz = FakeQuartz()
+                Injector(quartz).send(0, usage)
+                self.assertEqual(quartz.posted, [((code, True), 0), ((code, False), 0)])
+
     def test_default_constructor_loads_the_system_framework(self):
         try:
             import Quartz

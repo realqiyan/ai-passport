@@ -14,8 +14,8 @@ LETTERS = {
     "o": 31, "u": 32, "i": 34, "p": 35, "l": 37, "j": 38, "k": 40, "n": 45,
     "m": 46,
 }
-# kVK_Return, kVK_Escape, kVK_Tab and kVK_Space.
-NAMED = {0x28: 36, 0x29: 53, 0x2b: 48, 0x2c: 49}
+# Return, Escape, Backspace, Tab, Space, Down and Up.
+NAMED = {0x28: 36, 0x29: 53, 0x2a: 51, 0x2b: 48, 0x2c: 49, 0x51: 125, 0x52: 126}
 # kVK_F1 through kVK_F12.
 FUNCTION = {0x3a + index: code for index, code in enumerate(
     (122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111))}

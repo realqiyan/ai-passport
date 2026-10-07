@@ -11,6 +11,7 @@
 #include "freertos/task.h"
 #include "lvgl.h"
 #include "nvs_flash.h"
+#include "voice_controls.h"
 #include "voice_model.h"
 #include "voice_power.h"
 #include "voice_runtime.h"
@@ -50,8 +51,8 @@ static void ui_create(void) {
     link_label = label(screen, 112, &lv_font_montserrat_14, 0xbac8d6);
     address_label = label(screen, 137, &lv_font_montserrat_14, 0x78ddbe);
     message_label = label(screen, 172, &lv_font_montserrat_14, 0xffcb75);
-    lv_obj_t *help = label(screen, 246, &lv_font_montserrat_14, 0xbac8d6);
-    lv_label_set_text(help, "UP: microphone\nOK: temporary / stop\nDOWN: USB / Wi-Fi");
+    lv_obj_t *help = label(screen, 222, &lv_font_montserrat_14, 0xbac8d6);
+    lv_label_set_text(help, "UP: record | hold: Up\nDOWN: delete | hold: Down\nOK: Enter\nHold OK: USB / Wi-Fi");
     lv_screen_load(screen);
 }
 static void set_text(lv_obj_t *obj, const char *text) {
@@ -78,7 +79,7 @@ void app_main(void) {
         return;
     if (voice_power_restore()) {
         voice_wifi_mode = true;
-        message = "Reconnecting; press OK when ready";
+        message = "Reconnecting; press UP when ready";
     }
     voice_deep_wakes = voice_power_deep_wakes();
     voice_sleep_error = voice_power_last_sleep_error();
@@ -109,8 +110,6 @@ void app_main(void) {
     bool screen_off = false;
     bool wake_only = false;
     bool sleep_attempted = false;
-    bool trigger_pending = false;
-    int64_t temporary_started = 0;
     for (;;) {
         input_t input;
         bool received = xQueueReceive(inputs, &input, pdMS_TO_TICKS(screen_off ? 500 : 100)) == pdTRUE;
@@ -121,52 +120,15 @@ void app_main(void) {
         if (received && voice_wifi_idle) {
             voice_wifi_idle = false;
             wake_only = true;
-            show_message("Reconnecting; press OK when ready");
+            show_message("Reconnecting; press UP when ready");
         }
         if (received && wake_only) {
             if (input.event == BSP_BTN_CLICK || input.event == BSP_BTN_DOUBLE || input.event == BSP_BTN_LONG)
                 wake_only = false;
-        } else if (received && err == ESP_OK && input.event == BSP_BTN_CLICK) {
-            if (input.button == BSP_BTN_UP) {
-                voice_temporary = false;
-                trigger_pending = false;
-                if (voice_mic) {
-                    voice_mic = false;
-                    show_message("Microphone off");
-                } else if (!voice_bridge_ready())
-                    show_message("Bridge is not ready");
-                else {
-                    voice_mic = true;
-                    show_message("Microphone enabled");
-                }
-            } else if (input.button == BSP_BTN_DOWN) {
-                if (voice_mic)
-                    show_message("Stop microphone first");
-                else {
-                    voice_wifi_mode = !voice_wifi_mode;
-                    show_message("Transport changed");
-                }
-            } else if (input.button == BSP_BTN_OK) {
-                if (voice_temporary) {
-                    bool sent = trigger_pending || voice_trigger(true);
-                    voice_mic = false;
-                    voice_temporary = false;
-                    trigger_pending = false;
-                    show_message(sent ? "Temporary input stopped" : "Mic off; shortcut failed");
-                } else if (!voice_bridge_ready())
-                    show_message("Bridge is not ready");
-                else if (!voice_mic) {
-                    voice_session = (voice_session + 1) & 0x7fffffffu;
-                    voice_temporary = true;
-                    trigger_pending = true;
-                    temporary_started = esp_timer_get_time();
-                    voice_mic = true;
-                    show_message("Starting temporary input");
-                } else if (!voice_audio)
-                    show_message("Microphone is starting");
-                else
-                    show_message(voice_trigger(false) ? "Shortcut sent" : "Shortcut failed");
-            }
+        } else if (received && err == ESP_OK) {
+            const char *text = voice_controls_input(input.button, input.event, last_input);
+            if (text)
+                show_message(text);
         }
         int64_t now = esp_timer_get_time();
         if (voice_mic || voice_audio)
@@ -181,28 +143,9 @@ void app_main(void) {
             if (sleep_err != ESP_ERR_INVALID_STATE)
                 voice_error = sleep_err;
         }
-        if (voice_temporary && (!voice_mic || !voice_bridge_ready())) {
-            voice_mic = false;
-            voice_temporary = false;
-            trigger_pending = false;
-            show_message("Temporary input finished");
-        }
-        if (trigger_pending) {
-            if (voice_audio) {
-                bool sent = voice_trigger(false);
-                trigger_pending = false;
-                if (!sent) {
-                    voice_mic = false;
-                    voice_temporary = false;
-                }
-                show_message(sent ? "Temporary input active" : "Shortcut failed");
-            } else if (now - temporary_started >= 3000000 || !voice_temporary) {
-                voice_mic = false;
-                voice_temporary = false;
-                trigger_pending = false;
-                show_message("Microphone start failed");
-            }
-        }
+        const char *control_message = voice_controls_tick(now);
+        if (control_message)
+            show_message(control_message);
         if (now - battery_at >= 30000000) {
             battery = battery_ok ? bsp_battery_soc() : -1;
             voice_battery_percent = battery;
@@ -237,7 +180,7 @@ void app_main(void) {
         else
             snprintf(text, sizeof(text), "%d%%", battery);
         set_text(battery_label, text);
-        set_text(mic_label, voice_temporary ? "MIC TEMPORARY" : voice_audio ? "MIC STREAMING" : voice_mic ? "MIC WAITING" : "MIC OFF");
+        set_text(mic_label, voice_audio ? "MIC STREAMING" : voice_mic ? "MIC WAITING" : "MIC OFF");
         snprintf(text, sizeof(text), "%s | Bridge %s", voice_wifi_mode ? "Wi-Fi" : "USB",
                  voice_bridge_ready() ? "ready" : "offline");
         set_text(link_label, text);
@@ -251,7 +194,7 @@ void app_main(void) {
             snprintf(text, sizeof(text), "Error: 0x%x", voice_error);
         else
             snprintf(text, sizeof(text), "%s",
-                     now < message_until || !message_until ? message : "OK: temporary input");
+                     now < message_until || !message_until ? message : "UP: record | OK: Enter");
         set_text(message_label, text);
         bsp_lvgl_unlock();
     }

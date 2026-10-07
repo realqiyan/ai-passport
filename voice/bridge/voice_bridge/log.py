@@ -17,7 +17,7 @@ def log(message, *, file=None):
 STATUS_GROUPS = (
     ("音频与连接", (
         ("mic", "麦克风开启"), ("audio", "音频传输"), ("bridge", "桥接就绪"),
-        ("temporary", "临时输入"), ("session", "会话"),
+        ("recording", "语音输入"), ("session", "会话"),
         ("transport", "传输"), ("ip", "IP"))),
     ("电量与屏幕", (
         ("battery_pct", "电量"), ("battery_mv", "电压"),

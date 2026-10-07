@@ -23,7 +23,7 @@
 #include <unistd.h>
 #define VOICE_PORT 8765
 _Atomic bool voice_mic, voice_audio, voice_wifi_mode;
-_Atomic bool voice_temporary;
+_Atomic bool voice_recording;
 _Atomic bool voice_wifi_idle, voice_screen_off, voice_codec_asleep;
 _Atomic int voice_battery_percent = -1, voice_battery_mv = -1;
 _Atomic uint32_t voice_session;
@@ -55,7 +55,7 @@ static _Atomic bool sleep_requested, transport_paused, audio_paused;
 static _Atomic int transport_sleep_error;
 typedef struct {
     int64_t requested_at;
-    bool wifi, temporary, ending;
+    bool wifi, ending, keyboard;
     uint32_t session;
     uint8_t modifiers, key;
 } shortcut_request_t;
@@ -245,14 +245,14 @@ static void status(bool wifi) {
     voice_ip(ip, sizeof(ip));
     int n = snprintf(json, sizeof(json),
                      "{\"ack\":%lu,\"result\":\"%s\",\"mic\":%s,\"audio\":%s,\"bridge\":%s,"
-                     "\"temporary\":%s,\"session\":%lu,\"transport\":\"%s\",\"ip\":\"%s\",\"error\":%d,\"drops\":%lu,"
+                     "\"recording\":%s,\"session\":%lu,\"transport\":\"%s\",\"ip\":\"%s\",\"error\":%d,\"drops\":%lu,"
                      "\"modifiers\":%u,\"key\":%u,\"rate\":16000,\"channels\":1,\"bits\":16,"
                      "\"power_profile\":\"idle-v2\",\"battery_pct\":%d,\"battery_mv\":%d,"
                      "\"uptime_s\":%lu,\"screen_off\":%s,\"codec_asleep\":%s,\"wifi_idle\":%s,"
                      "\"usb_host\":%s,\"deep_wakes\":%lu,\"sleep_error\":%d}",
                      (unsigned long)ack_sequence, result, voice_mic ? "true" : "false",
                      voice_audio ? "true" : "false", voice_bridge_ready() ? "true" : "false",
-                     voice_temporary ? "true" : "false", (unsigned long)voice_session,
+                     voice_recording ? "true" : "false", (unsigned long)voice_session,
                      voice_wifi_mode ? "wifi" : "usb", ip,
                      voice_error, (unsigned long)drops, voice_modifier(), voice_key(),
                      voice_battery_percent, voice_battery_mv,
@@ -278,9 +278,18 @@ bool voice_trigger(bool ending) {
         return false;
     shortcut_request_t request = {.requested_at = esp_timer_get_time(),
                                   .wifi = voice_wifi_mode,
-                                  .temporary = voice_temporary, .ending = ending,
+                                  .ending = ending,
                                   .session = voice_session,
                                   .modifiers = voice_modifier(), .key = voice_key()};
+    return xQueueSend(shortcut_queue, &request, 0) == pdTRUE;
+}
+bool voice_send_key(uint8_t key) {
+    if (!voice_bridge_ready() || !shortcut_queue ||
+        !(key == 0x28 || key == 0x2a || key == 0x51 || key == 0x52))
+        return false;
+    shortcut_request_t request = {.requested_at = esp_timer_get_time(),
+                                  .wifi = voice_wifi_mode, .keyboard = true,
+                                  .key = key};
     return xQueueSend(shortcut_queue, &request, 0) == pdTRUE;
 }
 /* Only the transport task writes frames and owns the TCP client. */
@@ -289,15 +298,20 @@ static void send_shortcut(void) {
     if (xQueueReceive(shortcut_queue, &request, 0) != pdTRUE)
         return;
     if (request.wifi != voice_wifi_mode || !voice_bridge_ready() ||
-        (request.temporary && request.session != voice_session) ||
-        (!request.ending && (!voice_mic || !voice_audio)) ||
+        (!request.keyboard && request.session != voice_session) ||
+        (!request.keyboard && !request.ending && (!voice_mic || !voice_audio)) ||
         esp_timer_get_time() - request.requested_at > 500000)
         return;
     char json[160];
-    int n = snprintf(json, sizeof(json),
-                     "{\"event\":\"shortcut\",\"modifiers\":%u,\"key\":%u,"
-                     "\"temporary\":%s,\"ending\":%s,\"session\":%lu}",
-                     request.modifiers, request.key, request.temporary ? "true" : "false",
+    int n;
+    if (request.keyboard)
+        n = snprintf(json, sizeof(json),
+                     "{\"event\":\"key\",\"modifiers\":0,\"key\":%u}", request.key);
+    else
+        n = snprintf(json, sizeof(json),
+                     "{\"event\":\"recording\",\"modifiers\":%u,\"key\":%u,"
+                     "\"ending\":%s,\"session\":%lu}",
+                     request.modifiers, request.key,
                      request.ending ? "true" : "false", (unsigned long)request.session);
     if (n > 0 && n < (int)sizeof(json) &&
         !write_frame(request.wifi, VP_STATUS, 0, json, (size_t)n)) {
@@ -355,9 +369,9 @@ static void command(uint8_t type, uint32_t sequence, const uint8_t *data, size_t
         cJSON *session = cJSON_GetObjectItemCaseSensitive(obj, "session");
         if (cJSON_IsNumber(session) && session->valuedouble == session->valueint &&
             session->valueint >= 0) {
-            if (voice_temporary && (uint32_t)session->valueint == voice_session) {
+            if (voice_recording && (uint32_t)session->valueint == voice_session) {
                 voice_mic = false;
-                voice_temporary = false;
+                voice_recording = false;
             }
             snprintf(result, sizeof(result), "ok");
         }

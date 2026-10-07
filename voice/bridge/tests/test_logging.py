@@ -16,7 +16,7 @@ from voice_bridge.protocol import STATUS
 STAMP = "2026-10-07 08:09:10.123+08:00"
 STATUS_SAMPLE = {
     "ack": 17, "result": "ok", "mic": False, "audio": False,
-    "bridge": True, "temporary": False, "session": 7, "transport": "wifi",
+    "bridge": True, "recording": False, "session": 7, "transport": "wifi",
     "ip": "192.0.2.1", "error": 0, "drops": 0, "modifiers": 3, "key": 25,
     "rate": 16000, "channels": 1, "bits": 16, "power_profile": "idle-v2",
     "battery_pct": 50, "battery_mv": 3943, "uptime_s": 120,
@@ -51,7 +51,7 @@ class LoggingTests(unittest.TestCase):
 
     def test_status_keeps_every_firmware_field_in_readable_groups(self):
         expected = (
-            "音频与连接 | 麦克风开启=否 | 音频传输=否 | 桥接就绪=是 | 临时输入=否"
+            "音频与连接 | 麦克风开启=否 | 音频传输=否 | 桥接就绪=是 | 语音输入=否"
             " | 会话=7 | 传输=wifi | IP=192.0.2.1\n"
             "电量与屏幕 | 电量=50% | 电压=3943 mV | 屏幕熄灭=是 | 编码器休眠=是\n"
             "省电 | 策略=idle-v2 | Wi-Fi停用=否 | USB主机=否 | 深睡唤醒次数=2"
@@ -165,10 +165,10 @@ class LoggingTests(unittest.TestCase):
         self.assertIn("扩展字段 | new_sensor=23", stdout)
 
     def test_shortcut_log_keeps_request_fields_and_effective_override(self):
-        status = {"event": "shortcut", "temporary": True, "session": 7,
+        status = {"event": "recording", "session": 7,
                   "ending": False, "modifiers": 3, "key": 25, "extra": "保留"}
         stdout, _, injector = self.capture_session([status], shortcut=(5, 44))
-        self.assertEqual(stdout, f"[{STAMP}] 快捷键已发送 | event=shortcut | temporary=是"
+        self.assertEqual(stdout, f"[{STAMP}] 快捷键已发送 | event=recording"
                          " | session=7 | ending=否 | modifiers=3 | key=25 | extra=保留"
                          " | 实际修饰键=5 | 实际键码=44\n")
         injector.send.assert_called_once_with(5, 44)

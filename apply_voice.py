@@ -42,6 +42,10 @@ def main():
         -o "${test_dir}/test_voice_protocol"
     "${test_dir}/test_voice_protocol"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror \\
+        -Itests/sleep_stubs -Itests/demo_stubs -Icomponents/bsp/include -Imain \\
+        tests/test_voice_controls.c main/voice_controls.c -o "${test_dir}/test_voice_controls"
+    "${test_dir}/test_voice_controls"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror \\
         -Itests/bsp_stubs -Itests/power_stubs -Icomponents/bsp/include \\
         tests/test_voice_display_power.c components/bsp/src/bsp_display_power.c \\
         -o "${test_dir}/test_voice_display_power"

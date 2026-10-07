@@ -2,15 +2,16 @@
 
 更新日期：2026-10-07。设备使用自带麦克风采集音频，通过 USB 或 Wi-Fi 把音频送到 Mac；按键请求由 Mac 桥接程序注入。Mac 程序把音频写入 BlackHole，语音输入法通过聚合设备 `Passport Mic` 读取音频。
 
+2026-10-07 三键操作变更：用户确认麦克风常关。上键短按开始输入，再按一次结束并关麦；上键长按发送方向键 Up。下键短按发送 Backspace，长按发送方向键 Down。确认键短按发送 Enter，长按在关麦后切换 USB／Wi-Fi。持续开麦入口已移除。固件和 Mac 桥接必须一起更新；构建与设备验收状态见[本轮记录](#2026-10-07-三键操作与键盘按键)。
+
 2026-10-07 二次省电优化：用户确认，拔掉 USB、关麦且熄屏放置十几个小时，仍消耗约 30%–40% 电量。新版保留 60 秒空闲阈值，改为电池 Wi-Fi 深睡眠，并缩短 Mac 重连等待。当日在目标 Mac 重建、更新桥接并刷入 `idle-v2`，设备状态确认新固件在运行；完整门禁、归档校验和 Mac 桥接 105 项测试（104 项通过、1 项跳过）通过。唤醒延迟及隔夜耗电待测。最新行为见[自动省电](#自动省电)，证据见[二次优化记录](POWER.md#2026-10-07-二次优化)。
 
 2026-10-07 桥接日志优化：Wi-Fi 断线后安静重试，连接就绪后汇总等待时间和重试次数。每行增加本地时间、毫秒及 UTC 偏移；状态改为分组文本，保留设备上报的全部字段。Linux 桥接 116 项测试中 114 项通过、2 项跳过。新版日志尚未在 Mac 实测。格式与保存方法见[桥接日志](#桥接日志)。
 
-2026-10-06 耗电排查：用户反馈 Wi-Fi 与 Mac 桥接保持连接，少量说话仍在一天内耗尽电量。按用户确认的续航优先方案，新代码在关麦空闲 60 秒后停 Wi-Fi，启用自动浅睡眠，30 秒后休眠屏幕控制器，Mac 自动等待重连。首次按键只唤醒，桥接 ready 后再次按确认输入。完整固件门禁通过；桥接 102 项中 101 项通过、1 项跳过。当日在目标 Mac 重建此版本、重装桥接命令并刷入设备，设备上报 `power_profile=idle-v1` 和 `codec_asleep=true`，确认新固件生效；实际续航仍未测。证据、固件身份和验收步骤见[耗电排查](POWER.md)。
+2026-10-06 耗电排查：用户反馈 Wi-Fi 与 Mac 桥接保持连接，少量说话仍在一天内耗尽电量。按用户确认的续航优先方案，新代码在关麦空闲 60 秒后停 Wi-Fi，启用自动浅睡眠，30 秒后休眠屏幕控制器，Mac 自动等待重连。首次按键只唤醒，桥接 ready 后开始输入。完整固件门禁通过；桥接 102 项中 101 项通过、1 项跳过。当日在目标 Mac 重建此版本、重装桥接命令并刷入设备，设备上报 `power_profile=idle-v1` 和 `codec_asleep=true`，确认新固件生效；实际续航仍未测。证据、固件身份和验收步骤见[耗电排查](POWER.md)。
 
-**2026-10-05 设计变更**：原设计的 BLE 键盘投递不可用。macOS 从未把 `Passport Voice` 挂载成 HID 键盘，蓝牙设置里也没有连接入口。快捷键改由桥接程序注入；设备只发送一条 `{"event":"shortcut","modifiers":N,"key":N}` 请求，不参与按键合成。BLE HID 代码已从固件移除，设备不再初始化蓝牙。
+**2026-10-05 设计变更**：原设计的 BLE 键盘投递不可用。macOS 从未把 `Passport Voice` 挂载成 HID 键盘，蓝牙设置里也没有连接入口。快捷键改由桥接程序注入；设备发送 `recording` 或 `key` 事件，由桥接投递录音快捷键或普通键盘按键。BLE HID 代码已从固件移除，设备不再初始化蓝牙。
 
-2026-10-05 历史版本：支持确认键临时输入、再次确认结束并关麦、保存或临时覆盖快捷键，以及 Wi-Fi 自动发现。完整固件门禁通过；桥接测试 62 项中 60 项通过、2 项因 Linux 缺少 macOS 框架跳过，脚本与刷机测试 26 项通过。当轮未刷写设备。迁移步骤及未验证边界见下文和 [审查记录](REVIEW.md)。
 
 2026-10-06 不含自动发现的上一版固件从源码重建并写入设备。本轮在 macOS 重新克隆官方基线（改用 Gitee 镜像，见下文）、运行 `apply_voice.py`，完整门禁通过。应用镜像 1,212,512 字节，SHA-256 `8661b8b0af43e7ec522f92ff0374d977a69a168b8ef076d0aeac630f72f11217`；ELF SHA-256 `c8405d0d…`；归档 `voice-source/build/firmware/bbd52b10be55a7626f5dc0f2f34a13d186190b1d3fe84d642125a6810c94ae01/`，`archive_firmware.py verify` 通过。刷写只写 `0x10000` 应用分区，回读校验一致；启动日志显示 `Loaded app from partition at offset 0x10000`，未见 panic 或重启。设备 MAC 为 `98:c3:77:f5:72:4c`。固件的日志等级在构建时被关闭，串口不输出应用行。本轮未做应用功能实机验收。
 
@@ -157,14 +158,14 @@ projects/ai-passport/voice/uninstall.sh --yes
 - 麦克风关闭且 30 秒无操作时，关闭背光和 LVGL 定时器，让屏幕控制器进入休眠。开麦期间保持亮屏。
 - Wi-Fi 模式下，关麦且 60 秒无操作时停止无线，关闭 TCP/UDP 连接。按键初始化失败时不自动熄屏或停无线。
 - 屏幕与 codec 已休眠、运行初始化成功、USB 主机未连接且按键松开时，进入 Deep-sleep。此时停止音频、传输和按键扫描，并暂停电量计、共享 I2C、I2S 与显示。不设置周期唤醒。
-- 深睡眠后，短按上键并松开，恢复 Wi-Fi。上键直接接地；另外两键能否唤醒需实测。唤醒键只用于恢复，不能误开麦或切换模式。等屏幕显示桥接 ready，再按确认开始输入。
+- 深睡眠后，短按上键并松开，恢复 Wi-Fi。上键直接接地；另外两键能否唤醒需实测。唤醒键只用于恢复，不能误开麦或切换模式。等屏幕显示桥接 ready，再短按上键开始输入。
 - 已深睡时，单独插 USB 不会由应用唤醒。先按上键，再使用 USB 桥接或刷机。USB 主机已经连接时不会进入深睡眠。普通复位仍回到 USB 模式。
 - Mac 断线后还原默认输入、停止输出并清理缓冲，随后每隔 1 秒重试。重连时 TCP 建连超时为 1 秒；自动发现每两次失败执行一次，窗口为 1 秒。初次连接的超时仍为 3 秒。连接失败时不打开音频设备。可用 `Ctrl+C` 退出；令牌拒绝和配置错误仍直接报错。
 - Mac 在连接期间保留每秒心跳。状态报告电量、电压、屏幕与 codec 休眠状态，以及 `usb_host`、`deep_wakes`、`sleep_error`。`deep_wakes` 增长说明应用经历了深睡唤醒；`sleep_error=0` 表示上次外设关闭未报告错误。普通复位会清除计数。
 
 进入深睡之前仍保留自动 Light-sleep。外设关闭前的准备失败时，恢复已暂停的任务和按键扫描，本次空闲不反复尝试。没有 USB 主机保护的手动睡眠会中断串口。[Espressif USB 与睡眠说明](https://docs.espressif.com/projects/esp-idf/en/v5.5.3/esp32c3/api-guides/usb-serial-jtag-console.html#automatic-and-manual-sleep-entry)。1 秒是 Mac 重试间隔，不是按键到可输入的总时间。实际电流、续航、按键响应和重连延迟仍需实机测量，见[排查报告](POWER.md)。
 
-上键持续开麦时，静音也会采集并发送音频。输入结束后确认 `MIC OFF`，才能进入省电待机。若需连续开麦，保留上键的原有使用方式。
+麦克风默认关闭。短按上键开始输入，再短按上键结束并关麦。录音期间，即使没有说话也会采集音频。输入结束后检查 `MIC OFF`，设备才能进入省电待机。
 
 ## 桥接日志
 
@@ -176,7 +177,7 @@ Wi-Fi 发现超时、缓存地址探测和连接重试不打印日志。认证�
 
 | 分组 | 保留的原字段 |
 | --- | --- |
-| 音频与连接 | `mic`、`audio`、`bridge`、`temporary`、`session`、`transport`、`ip` |
+| 音频与连接 | `mic`、`audio`、`bridge`、`recording`、`session`、`transport`、`ip` |
 | 电量与屏幕 | `battery_pct`、`battery_mv`、`screen_off`、`codec_asleep` |
 | 省电 | `power_profile`、`wifi_idle`、`usb_host`、`deep_wakes`、`sleep_error`、`uptime_s` |
 | 诊断 | `error`、`drops`、`rate`、`channels`、`bits`、`modifiers`、`key`、`ack`、`result` |
@@ -226,27 +227,33 @@ PYTHONPATH=projects/ai-passport/voice/bridge \
 
 1. 启动桥接：`passport-voice usb` 或 `passport-voice wifi`（等价于 `start.sh usb|wifi`）。等它打印 `连接已建立`。
 2. 把光标放进要输入文字的输入框。
-3. 麦克风关闭时按**确定**，设备临时开麦。音频采集就绪后，桥接选择 `Passport Mic` 并发送输入快捷键。
-4. 说话。输入完成后再次按**确定**，桥接发送同一个快捷键结束输入，设备关闭麦克风，Mac 还原默认输入。
-5. 在终端按 `Ctrl+C` 停止桥接。
+3. 麦克风关闭时短按**上键**，设备开始采集音频。音频采集就绪后，桥接选择 `Passport Mic` 并发送输入快捷键。
+4. 说话。输入完成后再次短按**上键**，桥接发送同一个快捷键结束输入，设备关闭麦克风，Mac 还原默认输入。
+5. 等输入法显示完整文字。按**确认键**发送一次 Enter。
+6. 在终端按 `Ctrl+C` 停止桥接。
 
-这里采用用户确认的“再次确认结束”，不根据静音自动结束。输入法中的快捷键应设置为开始/结束切换；设备不能读取识别完成状态，也不能确认输入法是否接受了结束快捷键。
+这里采用用户于 2026-10-07 确认的“再次短按上键结束”，不根据静音自动结束，也不自动回车。输入法中的快捷键应设置为开始/结束切换；设备不能读取识别完成状态，也不能确认输入法是否接受了结束快捷键。
 
-如果需要连续输入，用**上键**持续开麦，按确定发送快捷键，用上键关麦。上键关麦只关闭音频，不额外触发输入法快捷键。
+确认键始终发送普通 Enter。它可能确认候选、换行或发送消息，取决于当前应用和输入法。普通键盘按键在关麦和录音期间均可使用，不改变麦克风状态。
 
-临时开麦等待采集最长 3 秒。启动失败、桥接断开或快捷键注入失败时自动关麦。快速再次确认可取消尚未开始的临时输入。旧会话的结束请求不会关闭或触发新会话。
+开始录音时等待采集最长 3 秒。启动失败、桥接断开或快捷键注入失败时自动关麦。快速再次短按上键可取消尚未开始的录音。旧会话的结束请求不会关闭或触发新会话。
 
-设备屏幕提示表示请求已入队。实际快捷键注入以 Mac 的 `快捷键已发送` 为准。
+设备屏幕提示表示请求已入队。实际投递以 Mac 的 `快捷键已发送` 或 `按键已发送` 为准。
 
 ## 设备操作
 
 | 操作 | 行为 |
 | --- | --- |
-| 上键单击 | 开启或关闭麦克风。电脑桥接未就绪时拒绝开启 |
-| 确定单击 | 关麦时开始临时输入；临时输入时结束并关麦；持续开麦时发送快捷键 |
-| 下键单击 | 麦克风关闭时切换 USB 与 Wi-Fi |
+| 上键短按 | 开始语音输入；再按一次结束并关麦。桥接未就绪时拒绝开始 |
+| 上键长按 | 发送一次键盘 Up，不开麦 |
+| 下键短按 | 发送一次 Backspace，删除光标前的一个字符或当前选中内容 |
+| 下键长按 | 发送一次键盘 Down，不删除字符 |
+| 确认键短按 | 发送一次 Enter，不开始或结束录音 |
+| 确认键长按 | 麦克风和音频采集均关闭时切换 USB／Wi-Fi；录音期间拒绝切换 |
 
-固件不再有蓝牙配对、数字比较确认和清除绑定，确定键长按不再有动作。macOS 蓝牙列表里若还留着一个 `Passport Voice`，那是系统缓存的历史条目，可以在蓝牙设置里移除；设备已不再广播。
+长按阈值沿用 BSP 的 500 ms。每次长按只发送一次动作，不连续重复。双击没有独立动作。深睡唤醒的首次上键只恢复连接，桥接 ready 后再短按上键录音。
+
+固件不再有蓝牙配对、数字比较确认和清除绑定。macOS 蓝牙列表里若还留着一个 `Passport Voice`，那是系统缓存的历史条目，可以在蓝牙设置里移除；设备已不再广播。
 
 页面分别显示麦克风采集和电脑桥接状态。
 
@@ -256,12 +263,12 @@ PYTHONPATH=projects/ai-passport/voice/bridge \
 
 | 段 | 就绪条件 | 失败表现 |
 | --- | --- | --- |
-| 设备录音 | 上键已开麦、桥接心跳在 3 秒内 | 屏幕 `Need mic and bridge` |
+| 设备录音 | 短按上键开麦、桥接心跳在 3 秒内 | 屏幕 `Bridge is not ready` 或 `Microphone start failed` |
 | 设备发请求 | 桥接就绪 | 屏幕 `Shortcut failed` |
 | 桥接注入 | 辅助功能已授权 | 桥接打印 `Shortcut not sent` |
 | 输入法取音频 | 默认输入为 `Passport Mic` | 桥接打印 `Default input: Passport Mic` |
 
-首次启动默认快捷键为 `Control + Shift + V`。已有 NVS 中保存的快捷键继续生效。
+首次启动默认录音快捷键为 `Control + Shift + V`。已有 NVS 中保存的快捷键继续生效。`--shortcut` 只覆盖开始／结束录音的快捷键，不覆盖 Enter、Backspace、Up 或 Down。
 
 保存快捷键到设备，重启后仍有效；修改前先停止 USB 桥接并关麦：
 
@@ -348,23 +355,23 @@ projects/ai-passport/voice/configure.sh <串口> --wifi-ssid <网络名>
 ./configure.sh <串口> --wifi-ssid <NETWORK_NAME>
 ```
 
-程序交互式读取密码，生成新令牌并保存到 Mac 和设备。无需重刷固件，省略 `--shortcut` 会保留设备快捷键。新令牌替换设备原令牌，其他 Mac 若使用原令牌也需同步。完成后按下键切回 Wi-Fi，等待设备取得 IP，再运行 `./start.sh wifi`。
+程序交互式读取密码，生成新令牌并保存到 Mac 和设备。无需重刷固件，省略 `--shortcut` 会保留设备快捷键。新令牌替换设备原令牌，其他 Mac 若使用原令牌也需同步。完成后长按确认键切回 Wi-Fi，等待设备取得 IP，再运行 `./start.sh wifi`。
 
 若原令牌仍在本机其他目录，可直接运行 `./start.sh wifi --token-file '<原令牌路径>'`。不要手动创建空令牌文件；随机生成但未写入设备的令牌也无法连接。
 
 ### 启动无线桥接
 
-配置完成后停止 USB 桥接，关闭麦克风，按下键切到 Wi-Fi，然后：
+配置完成后停止 USB 桥接，关闭麦克风，长按确认键切到 Wi-Fi，然后：
 
 ```bash
 projects/ai-passport/voice/start.sh wifi
 ```
 
-自动发现需要安装包含发现功能的新固件，并更新 Mac 桥接程序（重新运行 `install.sh`）。配网只保存网络和令牌；设备重启仍进入 USB 模式，需关麦后按下键切到 Wi-Fi。等待屏幕显示已取得 IP，再启动无线桥接。
+自动发现需要安装包含发现功能的新固件，并更新 Mac 桥接程序（重新运行 `install.sh`）。配网只保存网络和令牌；设备重启仍进入 USB 模式，需关麦后长按确认键切到 Wi-Fi。等待屏幕显示已取得 IP，再启动无线桥接。
 
 桥接程序在启动时向局域网广播 UDP `8765` 请求，最多等待 3 秒。每次启动重新查找，路由器更换设备 IP 后也可连接。发现报文只有协议标识和随机请求编号，不包含密码或令牌；TCP 连接仍验证已保存的令牌。验证成功后保存新 IP。找到多台设备时停止并列出 IP，不自动选择。
 
-发现超时后尝试上次保存的地址，兼容旧固件。首次使用旧固件、广播被路由器阻止或找到多台设备时，可手动指定屏幕上的地址：`start.sh wifi <设备IP>`。上次地址失效时也需手动指定。macOS 若提示本地网络访问，应允许运行桥接的终端访问。
+发现超时后尝试上次保存的地址。广播被路由器阻止或找到多台设备时，可手动指定屏幕上的地址：`start.sh wifi <设备IP>`。上次地址失效时也需手动指定。macOS 若提示本地网络访问，应允许运行桥接的终端访问。
 
 Mac 程序连接设备的 TCP `8765` 端口，网络必须允许同一局域网内的设备互访；自动发现还需允许 UDP 广播。Wi-Fi 链路使用令牌校验访问，TCP 音频没有应用层加密，此版本用于可信局域网。只允许 USB 保存配置，网络客户端不能修改密码或快捷键。
 
@@ -388,9 +395,9 @@ Mac 程序连接设备的 TCP `8765` 端口，网络必须允许同一局域网�
 | 桥接打印 `Shortcut not sent` | 未获辅助功能授权 | 授权后**重启桥接** |
 | 桥接打印 `Default input unchanged: No input device is named 'Passport Mic'` | 聚合设备缺失 | `passport-voice microphone --create` |
 | 桥接没打印 `Default input: Passport Mic`，输入法不出字 | 默认输入没切过去 | 检查 `--mic-device`，用 `inputs` 看当前默认 |
-| 桥接报 `Select usb on the device with DOWN` | 设备传输模式与参数不符 | 关麦后按下键切换，再重启桥接 |
+| 桥接报 `Select usb on the device by holding OK` | 设备传输模式与参数不符 | 关麦后长按确认键切换，再重启桥接 |
 | 桥接报 `Device changed audio transport` | 运行中切换了传输 | 重启桥接（这是刻意的安全检查） |
-| 屏幕 `Need mic and bridge` | 未开麦或桥接未就绪 | 先启动桥接，再按上键开麦 |
+| 屏幕 `Bridge is not ready` | 桥接未就绪 | 先启动桥接，等 ready 后短按上键录音 |
 | 屏幕 `Shortcut failed` | 请求没送出去 | 检查链路，USB 看串口、Wi-Fi 看 IP |
 | 桥接报 `No route to host` | Wi-Fi 瞬时不可达 | 直接重试；实测重试即成功 |
 | 桥接报 `No device frames for 3 seconds` | 链路断开 | 检查设备屏幕与网络，重新启动桥接 |
@@ -403,7 +410,8 @@ Mac 程序连接设备的 TCP `8765` 端口，网络必须允许同一局域网�
 | `start.sh` | 启动命令的薄包装，转发参数到核验来源后的 pipx `passport-voice` |
 | `bridge/pyproject.toml` | 桥接包 `passport-voice-bridge`，提供 `passport-voice` 命令，可用 pipx 安装 |
 | `flash.sh`、`flash_firmware.py` | 设备应用分区检查、刷写和校验 |
-| `firmware/main/main.c` | 独立语音页面、按键和状态显示 |
+| `firmware/main/main.c` | 独立语音页面、按键队列和状态显示 |
+| `firmware/main/voice_controls.c` | 三键动作、录音开始／结束、启动等待和失败关麦 |
 | `firmware/main/voice_power.c` | 空闲深睡眠、外设关闭顺序和按键唤醒恢复 |
 | `firmware/main/voice_runtime.c` | 分块录音、USB/Wi-Fi、配置保存、心跳和快捷键请求 |
 | `firmware/main/voice_protocol.c` | 有长度限制和 CRC32 的帧协议 |
@@ -480,7 +488,7 @@ PYTHON="$(pipx environment --value PIPX_LOCAL_VENVS)/passport-voice-bridge/bin/p
 
 脚本先检查 ESP32-C3 镜像，再读取设备 `0x8000` 的分区表。只有 `0x10000` 为未加密的 factory 应用分区，且镜像能放下时才执行写入。随后运行 `verify_flash`。镜像在检查前复制到临时目录，防止检查后源文件被替换。
 
-当前应用镜像大小为 1,220,752 字节。2026-10-07 在目标 Mac 重建并刷入，归档 `efc230fac25cc6485f8b51b555efb8b88c7bdeece796c76f0279b0ef9b620e1f`，应用 SHA-256 `266235e18711acaea37f8d6fd1706eb6362302937c1125c60a56b630208643ec`；更早的归档为 `ffd1247f…`（1,216,640 字节）、`bbd52b10…`（1,212,512 字节）和 `8bd71c1d…`。不同机器重建可能产生不同哈希。脚本不写 `0x0` 的合并镜像，不改引导、分区表或 NVS。
+三键版本应用镜像为 1,220,896 字节，归档 `6c561dc381969764a06b77f8988d50637d9b8202a879fcb5ede85564e1cf9860`。应用 SHA-256 为 `c4754a91b09739be7f7ce9c58ec83fb09105178ce91b5b70b352682757b1a6a9`。本轮未刷写设备。脚本只写 `0x10000` 应用分区，不改引导、分区表或 NVS。设备仍需同时更新 Mac 桥接，才能使用新事件。
 
 ## 音频与协议
 
@@ -496,6 +504,8 @@ PYTHON="$(pipx environment --value PIPX_LOCAL_VENVS)/passport-voice-bridge/bin/p
 | length | 2 | 载荷长度，最大 1024 字节 |
 | sequence | 4 | PCM 连续序号，或命令序号 |
 | CRC32 | 4 | 前 12 字节帧头与载荷的 IEEE CRC32 |
+
+录音控制使用 `event=recording`，包含 `session`、`ending`、`modifiers` 和 `key`。普通按键使用 `event=key`，包含 `modifiers=0` 和 `key`。录音事件绑定会话，普通按键不选择音频输入。设备端不重放超过 500 ms 的按键请求，也不跨传输模式发送。
 
 状态中的 `ack` 对应命令序号，`result` 报告结果。PCM 序号用于检测缺帧。帧解析器能跳过启动日志、错误帧和过长载荷。USB 音频期间禁用普通日志输出。
 
@@ -540,7 +550,7 @@ PYTHON="$(pipx environment --value PIPX_LOCAL_VENVS)/passport-voice-bridge/bin/p
 
 - Shortcut injection：PASS。`shortcut.py` 把 HID 用法码映射为 macOS 虚拟键码，用 `CGEventPost` 注入到 `kCGHIDEventTap`。`ctrl+shift+v` 的按键序列实测为键码 59（Control）、56（Shift）、9（V）依次按下再逆序释放，事件标志位依次为 1、3、3、3、1、0。
 - Accessibility：PASS。授权前桥接打印 `Shortcut not sent: macOS does not trust this process`；授权后必须重启桥接才对运行中的程序生效，与“macOS 在进程启动时固定授权”一致。
-- 设备端触发：PASS。按下设备确定键后屏幕显示 `Shortcut sent`，桥接打印 `Shortcut sent`，输入法开始听写并出字。
+- 设备端触发：PASS。设备触发请求后，桥接注入快捷键，输入法开始听写并出字。
 - 麦克风恢复：PASS。补上 `bsp_audio_wake()` 后，麦克风关闭再开启可重复工作，不再返回 `0x103`。
 - 聚合设备与默认输入切换：PASS。Chatterfly 的麦克风列表出现 `Passport Mic`；桥接在开麦时打印 `Default input: Passport Mic`、关麦时打印 `Default input restored`，系统默认输入随之改变和还原。
 - 进程清理：PASS。麦克风处于开启状态时发送 `SIGTERM`，默认输入仍还原为 `MacBook Pro麦克风`，Python 进程退出码 0。
@@ -554,12 +564,12 @@ PYTHON="$(pipx environment --value PIPX_LOCAL_VENVS)/passport-voice-bridge/bin/p
 - Flash：PASS。只写 `0x10000` 处的应用镜像，未做全片擦除。`verify_flash` 回读摘要一致。
 - 分区表（刷写后回读）：`nvs` `0x9000`/24K、`phy_init` `0xf000`/4K、`factory` `0x10000`/3072K、`cardid` `0x356000`/16K、`easter` `0x360000`/388K、`recovery` `0x700000`/1024K，与刷写前一致。
 - 桌面核验：PASS。桥接程序启动后状态不含 `hid` 字段。macOS 蓝牙列表仍显示 `Passport Voice`，但只有地址、没有连接状态，属于系统缓存的历史条目。
-- 设备界面与按键：PASS。用户确认重刷后屏幕显示、上键开关麦、确定键触发和按下键切换传输均正常。
+- 设备界面与按键：PASS。用户确认重刷后的屏幕显示、录音触发和传输切换均正常。
 
 ### 2026-10-05 Wi-Fi 链路端到端验收
 
 - Configure：PASS。`configure --wifi-ssid` 在设备处于 USB 模式、麦克风关闭时写入 SSID、密码与令牌；令牌落到 `voice/.local/token`（64 位十六进制，权限 0600）。设备原有快捷键未被改写，仍为 `modifiers=3`、`key=25`（Ctrl+Shift+V）。
-- 关联：PASS。设备下键切到 Wi-Fi 后取得地址 `192.0.2.2`（Mac 侧为 `192.0.2.1`，同网段）。ICMP 3/3 可达，但往返延迟 66–253 ms，抖动明显。
+- 关联：PASS。设备切到 Wi-Fi 后取得地址 `192.0.2.2`（Mac 侧为 `192.0.2.1`，同网段）。ICMP 3/3 可达，但往返延迟 66–253 ms，抖动明显。
 - TCP：PASS。8765 端口 `create_connection` 耗时 0.10 秒。
 - 语音输入：PASS。桥接以 `--host 192.0.2.2` 启动后 `bridge: true`，开麦后 `mic` 与 `audio` 均为 true，快捷键注入并出字。
 - 丢帧：**`drops` 为 0**。尽管 ICMP 延迟抖动很大，20 ms 一块的音频经 Wi-Fi 未丢帧。
@@ -606,5 +616,17 @@ PYTHON="$(pipx environment --value PIPX_LOCAL_VENVS)/passport-voice-bridge/bin/p
 - Flash：PASS。按用户确认重刷同一镜像。归档 `efc230fa…`，应用镜像 1,220,752 字节，SHA-256 `266235e1…`，与已刷的 `idle-v2` 镜像相同；只写 `0x10000`，`verify_flash` 摘要一致；设备 MAC 为 `98:c3:77:f5:72:4c`。
 - Boot：PASS。复位后二级引导日志显示 `Loaded app from partition at offset 0x10000`，未见 panic；分区表回读与记录一致（`factory` 在 `0x10000`，3072K）。
 - 未验证：Mac 上的实际断线静默、恢复汇总与重定向文件时间戳；设备端 `power_profile` 确认、深睡唤醒、USB 与 Wi-Fi 出字本轮未做。
+
+### 2026-10-07 三键操作与键盘按键
+
+已确认决策：麦克风默认关闭。六个短按／长按动作按[设备操作](#设备操作)执行。用户要求本次变更不保留旧方案的兼容代码、文档或测试。录音控制统一为 `recording` 事件，删除 `temporary` 字段和持续开麦分支。普通键盘输入使用 `key` 事件。固件与 Mac 桥接需同时更新。
+
+- Build：PASS。ESP-IDF 5.5.3 完整 `./tools/validate.sh` 通过，应用 1,220,896 字节，分区与合并镜像检查通过。
+- Host tests：PASS。三键动作、录音启动等待、取消、超时、断线及注入失败关麦的 C 测试通过。Linux 桥接 120 项中 118 项通过、2 项因缺少 macOS 框架跳过。脚本与刷机固定数据测试 26 项全部通过。
+- 归档：`../voice-source/build/firmware/6c561dc381969764a06b77f8988d50637d9b8202a879fcb5ede85564e1cf9860/`，`archive_firmware.py verify` 通过。完整镜像 SHA-256 与目录名一致。应用 SHA-256 为 `c4754a91b09739be7f7ce9c58ec83fb09105178ce91b5b70b352682757b1a6a9`；匹配 ELF SHA-256 为 `57ec3cf2a175f71ed30bdbdf74a154c9adfe4905dfb2acbe1412586ea5067d20`。
+- Device tests：NOT RUN。当前 Linux 环境只读枚举没有找到串口；未更新目标 Mac 桥接，也未刷写设备。
+- Unverified：Mac 实际键盘注入、三个键的短按／长按手感、屏幕提示、语音结束与文字完成时序、USB／Wi-Fi 切换及深睡唤醒。下一步在目标 Mac 更新桥接，获本次刷写授权后只写应用分区，再按上述六个动作验收。
+
+构建环境：磁盘临时目录空间不足。沿用现有 `TMPDIR` 入口，在 `/dev/shm` 完成隔离构建；归档保存在项目原有目录。
 
 资料：[方案分析](../VOICE-INPUT.md)、[项目状态](../README.md)、[BlackHole](https://github.com/ExistentialAudio/BlackHole)、[macOS 听写](https://support.apple.com/guide/mac-help/use-dictation-mh40584/mac)。

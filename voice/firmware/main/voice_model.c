@@ -4,9 +4,6 @@ bool voice_shortcut_valid(int modifiers, int key) {
            ((key >= 4 && key <= 29) || key == 0x28 || key == 0x29 ||
             key == 0x2b || key == 0x2c || (key >= 0x3a && key <= 0x45));
 }
-bool voice_can_trigger(bool audio, bool bridge) {
-    return audio && bridge;
-}
 
 bool voice_json_depth_valid(const uint8_t *data, size_t size) {
     unsigned depth = 0;

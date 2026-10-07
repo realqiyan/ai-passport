@@ -27,7 +27,7 @@ DEFAULT_TOKEN = state.directory() / "token"
 def shortcut(value):
     parts = value.lower().split("+")
     if not parts or parts[-1] not in KEYS or any(p not in MODIFIERS for p in parts[:-1]):
-        raise argparse.ArgumentTypeError("Use a shortcut such as ctrl+alt+space; Fn needs separate compatibility work")
+        raise argparse.ArgumentTypeError("Use a shortcut such as ctrl+alt+space")
     modifiers = 0
     for part in parts[:-1]:
         modifiers |= MODIFIERS[part]
@@ -223,7 +223,7 @@ def _run(args, *, on_connected=None):
         initial = session.request("status")
         expected = "usb" if args.serial else "wifi"
         if initial.get("transport") != expected:
-            raise RuntimeError(f"Select {expected} on the device with DOWN before running the bridge")
+            raise RuntimeError(f"Select {expected} on the device by holding OK before running the bridge")
         # Reconnect probes must not repeatedly open CoreAudio while the device sleeps.
         sink = AudioSink(args.output)
         switcher = InputSwitcher(args.mic_device) if args.mic_device else None
@@ -241,7 +241,7 @@ def _run(args, *, on_connected=None):
         received = heartbeat
         latest = None
         mic_active = False
-        temporary_session = None
+        recording_session = None
         while True:
             for frame in session.receive():
                 received = time.monotonic()
@@ -250,30 +250,33 @@ def _run(args, *, on_connected=None):
                     sink.buffer.push(frame.sequence, frame.payload)
                 elif frame.kind == STATUS:
                     status = json.loads(frame.payload)
-                    if status.get("event") == "shortcut":
+                    if status.get("event") in ("recording", "key"):
+                        keyboard = status.get("event") == "key"
                         event_details = " | ".join(
                             f"{name}={display_value(value)}" for name, value in status.items())
-                        if status.get("temporary") and status.get("ending"):
-                            if temporary_session != status.get("session"):
+                        if not keyboard and status.get("ending"):
+                            if recording_session != status.get("session"):
                                 log(f"忽略过期结束快捷键 | {event_details}")
                                 continue
-                            temporary_session = None
+                            recording_session = None
                         try:
                             if not trusted():
                                 raise RuntimeError("macOS does not trust this process for Accessibility")
-                            if switcher and not status.get("ending"):
+                            if not keyboard and switcher and not status.get("ending"):
                                 if switcher.set(True):
                                     log(f"Default input: {switcher.name}")
                                 mic_active = True
-                            modifiers, key = getattr(args, "shortcut", None) or (
-                                status.get("modifiers"), status.get("key"))
+                            modifiers, key = status.get("modifiers"), status.get("key")
+                            if not keyboard:
+                                modifiers, key = getattr(args, "shortcut", None) or (modifiers, key)
                             injector.send(modifiers, key)
-                            if status.get("temporary") and not status.get("ending"):
-                                temporary_session = status.get("session")
-                            log(f"快捷键已发送 | {event_details} | 实际修饰键={modifiers} | 实际键码={key}")
+                            if not keyboard and not status.get("ending"):
+                                recording_session = status.get("session")
+                            label = "按键已发送" if keyboard else "快捷键已发送"
+                            log(f"{label} | {event_details} | 实际修饰键={modifiers} | 实际键码={key}")
                         except (RuntimeError, ValueError) as error:
                             log(f"Shortcut not sent: {error} | {event_details}", file=sys.stderr)
-                            if status.get("temporary") and not status.get("ending"):
+                            if not keyboard and not status.get("ending"):
                                 session.send("stop", session=status.get("session"))
                         continue
                     if (status.get("rate"), status.get("channels"), status.get("bits")) != (16000, 1, 16):
@@ -367,7 +370,7 @@ def run_options(parser):
     parser.add_argument("--host-file", type=Path, default=DEFAULT_TOKEN.with_name("host"),
         help="Saved address to try when discovery times out")
     parser.add_argument("--shortcut", type=shortcut,
-        help="Override the shortcut for this run; configure saves it on the device")
+        help="Override only the recording shortcut for this run; configure saves it on the device")
     parser.add_argument("--output", default="BlackHole 2ch")
     parser.add_argument("--mic-device", default="Passport Mic",
         help="Input device to select while recording; an empty value keeps the current default")

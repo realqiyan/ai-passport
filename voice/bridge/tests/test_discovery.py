@@ -112,7 +112,7 @@ class DiscoverySessionTests(unittest.TestCase):
             open_session(self.args)
             self.assertEqual(self.host_file.read_text(), '192.0.2.3\n')
 
-    def test_old_firmware_can_use_saved_address(self):
+    def test_discovery_timeout_uses_saved_address(self):
         self.host_file.write_text("192.0.2.1\n")
         _, address = self.connect(failure=TimeoutError("no discovery"))
         self.assertEqual(address, "192.0.2.1")
