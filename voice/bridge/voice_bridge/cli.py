@@ -101,16 +101,18 @@ def save_token(path, token):
 def open_session(args):
     # Check local credentials before discovery or opening the device connection.
     token = "" if args.serial else read_token(args.token_file)
+    reconnecting = getattr(args, "_reconnecting", False)
     if getattr(args, "discover", False):
         try:
-            args.host = discover_host()
+            args.host = discover_host(timeout=1 if reconnecting else 3)
         except TimeoutError:
             if not args.host_file.is_file() or not args.host_file.read_text().strip():
                 raise
             args.host = args.host_file.read_text().strip()
             print(f"Discovery timed out; trying saved address {args.host}.", file=sys.stderr)
         print(f"Wi-Fi device: {args.host}", file=sys.stderr)
-    link = SerialLink(args.serial) if args.serial else TcpLink(args.host)
+    link = SerialLink(args.serial) if args.serial else TcpLink(
+        args.host, connect_timeout=1 if reconnecting else 3)
     session = Session(link)
     try:
         session.request("hello", token=token)
@@ -187,20 +189,28 @@ def run(args):
                 if args.serial:
                     raise
                 if failures == 0:
-                    print("Wi-Fi disconnected. Waiting for the device; press a device key to wake it.",
+                    print("Wi-Fi disconnected. Waiting for the device; press UP to wake it.",
                           file=sys.stderr, flush=True)
                 failures += 1
+                args._reconnecting = True
                 # Use the last address first. Periodic discovery handles DHCP changes.
                 if automatic and getattr(args, "host", None):
-                    args.discover = failures % 5 == 0
-                time.sleep(min(2 * failures, 10))
+                    args.discover = failures % 2 == 0
+                time.sleep(1)
 
 def _run(args):
     from .audio import AudioSink
-    sink = AudioSink(args.output)
+    sink = None
     session = None
     switcher = None
     try:
+        session = open_session(args)
+        initial = session.request("status")
+        expected = "usb" if args.serial else "wifi"
+        if initial.get("transport") != expected:
+            raise RuntimeError(f"Select {expected} on the device with DOWN before running the bridge")
+        # Reconnect probes must not repeatedly open CoreAudio while the device sleeps.
+        sink = AudioSink(args.output)
         switcher = InputSwitcher(args.mic_device) if args.mic_device else None
         injector = Injector()
         if not trusted():
@@ -208,11 +218,6 @@ def _run(args):
                   "device cannot send the shortcut.", file=sys.stderr)
             print(f"Allow the terminal application, or {sys.executable}, in System Settings > "
                   "Privacy & Security > Accessibility.", file=sys.stderr)
-        session = open_session(args)
-        initial = session.request("status")
-        expected = "usb" if args.serial else "wifi"
-        if initial.get("transport") != expected:
-            raise RuntimeError(f"Select {expected} on the device with DOWN before running the bridge")
         session.request("ready", active=True)
         print("Audio output ready. Press OK for temporary input, then OK again to stop. UP keeps the microphone on.")
         heartbeat = time.monotonic()
@@ -267,7 +272,8 @@ def _run(args):
                             print(f"Default input unchanged: {error}", file=sys.stderr, flush=True)
                     brief = {k: status.get(k) for k in (
                         "mic", "audio", "bridge", "error", "drops", "power_profile",
-                        "battery_pct", "battery_mv", "screen_off", "codec_asleep")}
+                        "battery_pct", "battery_mv", "screen_off", "codec_asleep",
+                        "usb_host", "deep_wakes", "sleep_error")}
                     if brief != latest:
                         print(json.dumps(brief), flush=True)
                         latest = brief
@@ -293,8 +299,9 @@ def _run(args):
                     pass
                 session.link.close()
         finally:
-            sink.buffer.clear()
-            sink.close()
+            if sink is not None:
+                sink.buffer.clear()
+                sink.close()
 
 def serial_port(explicit):
     """Return the USB serial port, or explain how to choose one."""

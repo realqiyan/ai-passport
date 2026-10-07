@@ -12,16 +12,19 @@ class PowerTests(unittest.TestCase):
     def test_wifi_reconnects_after_idle_and_uses_last_address_first(self):
         args = SimpleNamespace(serial=None, host='192.0.2.1', discover=True)
         attempts = []
+        retry_modes = []
         def attempt(_args):
             attempts.append(_args.discover)
+            retry_modes.append(getattr(_args, '_reconnecting', False))
             if len(attempts) <= 5:
                 raise ConnectionError('asleep')
             return 0
         with patch('voice_bridge.cli._run', side_effect=attempt), patch(
                 'voice_bridge.cli.time.sleep') as pause:
             self.assertEqual(run(args), 0)
-        self.assertEqual(attempts, [True, False, False, False, False, True])
-        self.assertEqual([call.args[0] for call in pause.call_args_list], [2, 4, 6, 8, 10])
+        self.assertEqual(attempts, [True, False, True, False, True, False])
+        self.assertEqual(retry_modes, [False, True, True, True, True, True])
+        self.assertEqual([call.args[0] for call in pause.call_args_list], [1, 1, 1, 1, 1])
 
     def test_wifi_does_not_retry_bad_credentials(self):
         args = SimpleNamespace(serial=None, host='192.0.2.1', discover=False)
@@ -50,6 +53,26 @@ class PowerTests(unittest.TestCase):
         with patch('voice_bridge.transport.socket.create_connection', side_effect=OSError('network down')):
             with self.assertRaisesRegex(ConnectionError, 'Wi-Fi connection failed'):
                 TcpLink('192.0.2.1')
+
+    def test_sleeping_device_does_not_open_audio_on_reconnect_attempts(self):
+        args = SimpleNamespace(output='BlackHole 2ch', mic_device='Passport Mic', serial=None)
+        with patch('voice_bridge.cli.open_session', side_effect=ConnectionError('asleep')), \
+             patch('voice_bridge.audio.AudioSink') as sink, patch('voice_bridge.cli.InputSwitcher') as switcher:
+            with self.assertRaisesRegex(ConnectionError, 'asleep'):
+                _run(args)
+        sink.assert_not_called()
+        switcher.assert_not_called()
+
+    def test_audio_startup_failure_closes_authenticated_connection(self):
+        args = SimpleNamespace(output='BlackHole 2ch', mic_device='', serial=None)
+        session = Mock()
+        session.request.return_value = {'transport': 'wifi'}
+        with patch('voice_bridge.cli.open_session', return_value=session), patch(
+                'voice_bridge.audio.AudioSink', side_effect=RuntimeError('output unavailable')):
+            with self.assertRaisesRegex(RuntimeError, 'output unavailable'):
+                _run(args)
+        session.send.assert_called_once_with('ready', active=False)
+        session.link.close.assert_called_once()
 
     def test_partial_connection_failure_closes_socket(self):
         channel = Mock()
@@ -121,7 +144,7 @@ class PowerTests(unittest.TestCase):
     def test_sink_closes_even_if_transport_cleanup_fails(self):
         sink = self.sink()
         session = Mock()
-        session.request.return_value = {'transport': 'wifi'}
+        session.request.return_value = {'transport': 'usb'}
         session.link.close.side_effect = OSError('close failed')
         args = SimpleNamespace(output='BlackHole 2ch', mic_device='', serial='test')
         with patch('voice_bridge.audio.AudioSink', return_value=sink), \

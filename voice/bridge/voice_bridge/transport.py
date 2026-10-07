@@ -2,10 +2,10 @@ import socket
 import time
 
 class TcpLink:
-    def __init__(self, host):
+    def __init__(self, host, connect_timeout=3):
         self.socket = None
         try:
-            self.socket = socket.create_connection((host, 8765), timeout=3)
+            self.socket = socket.create_connection((host, 8765), timeout=connect_timeout)
             self.socket.settimeout(0.5)
             self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         except OSError as error:

@@ -25,6 +25,7 @@ def main():
     defaults += "\n# Voice application\nCONFIG_LOG_DEFAULT_LEVEL_NONE=y\nCONFIG_LOG_MAXIMUM_LEVEL=0\n"
     defaults += "CONFIG_PM_ENABLE=y\nCONFIG_FREERTOS_USE_TICKLESS_IDLE=y\n"
     defaults += "CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION=y\nCONFIG_BUTTON_PERIOD_TIME_MS=20\n"
+    defaults += "CONFIG_ESP_SLEEP_GPIO_ENABLE_INTERNAL_RESISTORS=n\n"
     defaults += "CONFIG_BT_ENABLED=n\nCONFIG_BT_NIMBLE_ENABLED=n\n"
     files["sdkconfig.defaults"] = defaults.encode()
     display = subprocess.check_output(
@@ -41,10 +42,15 @@ def main():
         -o "${test_dir}/test_voice_protocol"
     "${test_dir}/test_voice_protocol"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror \\
-        -Itests/power_stubs -Itests/bsp_stubs -Icomponents/bsp/include \\
+        -Itests/bsp_stubs -Itests/power_stubs -Icomponents/bsp/include \\
         tests/test_voice_display_power.c components/bsp/src/bsp_display_power.c \\
         -o "${test_dir}/test_voice_display_power"
     "${test_dir}/test_voice_display_power"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror \\
+        -Itests/sleep_stubs -Itests/power_stubs -Itests/demo_stubs -Itests/bsp_stubs -Icomponents/bsp/include -Imain \\
+        -include tests/power_stubs/voice_sleep_test_stubs.h \\
+        tests/test_voice_power.c main/voice_power.c -o "${test_dir}/test_voice_power"
+    "${test_dir}/test_voice_power"
 '''
     gate = gate.replace('    rm -rf "${test_dir}"', addition + '    rm -rf "${test_dir}"')
     gate = gate.replace('mktemp -d /tmp/ai-passport-firmware.XXXXXX',

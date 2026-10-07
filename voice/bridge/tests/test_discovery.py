@@ -88,6 +88,17 @@ class DiscoverySessionTests(unittest.TestCase):
         self.assertEqual(address, "192.0.2.2")
         self.assertEqual(self.host_file.read_text(), "192.0.2.2\n")
 
+    def test_reconnect_uses_short_deadlines_and_still_authenticates_new_address(self):
+        self.args._reconnecting = True
+        self.host_file.write_text("192.0.2.1\n")
+        with patch("voice_bridge.cli.discover_host", return_value="192.0.2.2") as find, patch(
+                "voice_bridge.cli.TcpLink") as link, patch("voice_bridge.cli.Session") as session:
+            open_session(self.args)
+            find.assert_called_once_with(timeout=1)
+            link.assert_called_once_with("192.0.2.2", connect_timeout=1)
+            session.return_value.request.assert_called_once_with("hello", token="a" * 64)
+            self.assertEqual(self.host_file.read_text(), "192.0.2.2\n")
+
     def test_explicit_address_is_cached_only_after_authentication(self):
         self.args.discover = False
         self.args.host = '192.0.2.3'

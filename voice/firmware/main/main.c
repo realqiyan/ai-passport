@@ -12,7 +12,9 @@
 #include "lvgl.h"
 #include "nvs_flash.h"
 #include "voice_model.h"
+#include "voice_power.h"
 #include "voice_runtime.h"
+#include "driver/usb_serial_jtag.h"
 #include <stdio.h>
 #include <string.h>
 typedef struct {
@@ -74,6 +76,12 @@ void app_main(void) {
     };
     if (esp_pm_configure(&power) != ESP_OK)
         return;
+    if (voice_power_restore()) {
+        voice_wifi_mode = true;
+        message = "Reconnecting; press OK when ready";
+    }
+    voice_deep_wakes = voice_power_deep_wakes();
+    voice_sleep_error = voice_power_last_sleep_error();
     inputs = xQueueCreate(12, sizeof(input_t));
     if (!inputs)
         return;
@@ -100,13 +108,16 @@ void app_main(void) {
     int64_t last_input = esp_timer_get_time();
     bool screen_off = false;
     bool wake_only = false;
+    bool sleep_attempted = false;
     bool trigger_pending = false;
     int64_t temporary_started = 0;
     for (;;) {
         input_t input;
         bool received = xQueueReceive(inputs, &input, pdMS_TO_TICKS(screen_off ? 500 : 100)) == pdTRUE;
-        if (received)
+        if (received) {
             last_input = esp_timer_get_time();
+            sleep_attempted = false;
+        }
         if (received && voice_wifi_idle) {
             voice_wifi_idle = false;
             wake_only = true;
@@ -162,6 +173,14 @@ void app_main(void) {
             last_input = now;
         voice_wifi_idle = voice_wifi_mode &&
             voice_should_idle_wifi(now, last_input, voice_mic, voice_audio, buttons_ok);
+        if (voice_wifi_idle && screen_off && voice_codec_asleep && err == ESP_OK &&
+            !usb_serial_jtag_is_connected() && !sleep_attempted) {
+            sleep_attempted = true;
+            esp_err_t sleep_err = voice_power_sleep();
+            /* A held key or late USB insertion is a normal cancelled attempt. */
+            if (sleep_err != ESP_ERR_INVALID_STATE)
+                voice_error = sleep_err;
+        }
         if (voice_temporary && (!voice_mic || !voice_bridge_ready())) {
             voice_mic = false;
             voice_temporary = false;
