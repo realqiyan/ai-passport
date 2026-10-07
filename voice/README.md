@@ -2,7 +2,7 @@
 
 更新日期：2026-10-07。设备使用自带麦克风采集音频，通过 USB 或 Wi-Fi 把音频送到 Mac；按键请求由 Mac 桥接程序注入。Mac 程序把音频写入 BlackHole，语音输入法通过聚合设备 `Passport Mic` 读取音频。
 
-2026-10-07 三键操作变更：用户确认麦克风常关。上键短按开始输入，再按一次结束并关麦；上键长按发送方向键 Up。下键短按发送 Backspace，长按发送方向键 Down。确认键短按发送 Enter，长按在关麦后切换 USB／Wi-Fi。持续开麦入口已移除。固件和 Mac 桥接必须一起更新；构建与设备验收状态见[本轮记录](#2026-10-07-三键操作与键盘按键)。
+2026-10-07 三键操作变更：用户确认麦克风常关。上键短按开始输入，再按一次结束并关麦；上键长按发送方向键 Up。下键短按发送 Backspace，长按发送方向键 Down。确认键短按发送 Enter，长按在关麦后切换 USB／Wi-Fi。持续开麦入口已移除。固件和 Mac 桥接必须一起更新；构建与设备状态见[本轮记录](#2026-10-07-三键操作与键盘按键)。
 
 2026-10-07 二次省电优化：用户确认，拔掉 USB、关麦且熄屏放置十几个小时，仍消耗约 30%–40% 电量。新版保留 60 秒空闲阈值，改为电池 Wi-Fi 深睡眠，并缩短 Mac 重连等待。当日在目标 Mac 重建、更新桥接并刷入 `idle-v2`，设备状态确认新固件在运行；完整门禁、归档校验和 Mac 桥接 105 项测试（104 项通过、1 项跳过）通过。唤醒延迟及隔夜耗电待测。最新行为见[自动省电](#自动省电)，证据见[二次优化记录](POWER.md#2026-10-07-二次优化)。
 
@@ -488,7 +488,7 @@ PYTHON="$(pipx environment --value PIPX_LOCAL_VENVS)/passport-voice-bridge/bin/p
 
 脚本先检查 ESP32-C3 镜像，再读取设备 `0x8000` 的分区表。只有 `0x10000` 为未加密的 factory 应用分区，且镜像能放下时才执行写入。随后运行 `verify_flash`。镜像在检查前复制到临时目录，防止检查后源文件被替换。
 
-三键版本应用镜像为 1,220,896 字节，归档 `6c561dc381969764a06b77f8988d50637d9b8202a879fcb5ede85564e1cf9860`。应用 SHA-256 为 `c4754a91b09739be7f7ce9c58ec83fb09105178ce91b5b70b352682757b1a6a9`。本轮未刷写设备。脚本只写 `0x10000` 应用分区，不改引导、分区表或 NVS。设备仍需同时更新 Mac 桥接，才能使用新事件。
+三键版本应用镜像为 1,220,896 字节。已刷入设备的镜像来自本机归档 `d4ffaefdbaebd33f0c3b381cf1a76db9f279dec1ce7ba35bdaf74083892b35d3`，应用 SHA-256 为 `a5f5243f3c1a03940538a043bfb5f6efc33b5da2c7ad29bff5671678bc6d6efe`。此前另一台机器构建的归档 `6c561dc381969764a06b77f8988d50637d9b8202a879fcb5ede85564e1cf9860` 大小相同、哈希不同，未刷入。脚本只写 `0x10000` 应用分区，不改引导、分区表或 NVS。设备必须同时更新 Mac 桥接，才能使用新事件。
 
 ## 音频与协议
 
@@ -621,12 +621,19 @@ PYTHON="$(pipx environment --value PIPX_LOCAL_VENVS)/passport-voice-bridge/bin/p
 
 已确认决策：麦克风默认关闭。六个短按／长按动作按[设备操作](#设备操作)执行。用户要求本次变更不保留旧方案的兼容代码、文档或测试。录音控制统一为 `recording` 事件，删除 `temporary` 字段和持续开麦分支。普通键盘输入使用 `key` 事件。固件与 Mac 桥接需同时更新。
 
-- Build：PASS。ESP-IDF 5.5.3 完整 `./tools/validate.sh` 通过，应用 1,220,896 字节，分区与合并镜像检查通过。
-- Host tests：PASS。三键动作、录音启动等待、取消、超时、断线及注入失败关麦的 C 测试通过。Linux 桥接 120 项中 118 项通过、2 项因缺少 macOS 框架跳过。脚本与刷机固定数据测试 26 项全部通过。
-- 归档：`../voice-source/build/firmware/6c561dc381969764a06b77f8988d50637d9b8202a879fcb5ede85564e1cf9860/`，`archive_firmware.py verify` 通过。完整镜像 SHA-256 与目录名一致。应用 SHA-256 为 `c4754a91b09739be7f7ce9c58ec83fb09105178ce91b5b70b352682757b1a6a9`；匹配 ELF SHA-256 为 `57ec3cf2a175f71ed30bdbdf74a154c9adfe4905dfb2acbe1412586ea5067d20`。
-- Device tests：NOT RUN。当前 Linux 环境只读枚举没有找到串口；未更新目标 Mac 桥接，也未刷写设备。
-- Unverified：Mac 实际键盘注入、三个键的短按／长按手感、屏幕提示、语音结束与文字完成时序、USB／Wi-Fi 切换及深睡唤醒。下一步在目标 Mac 更新桥接，获本次刷写授权后只写应用分区，再按上述六个动作验收。
+先在 Linux 完成源码与门禁验证；2026-10-07 用户要求重新刷固件并重装本地命令，随后在目标 Mac 重做构建、刷写与安装。下列结果除注明外均为目标 Mac 实测。
 
-构建环境：磁盘临时目录空间不足。沿用现有 `TMPDIR` 入口，在 `/dev/shm` 完成隔离构建；归档保存在项目原有目录。
+- Apply：PASS。`apply_voice.py` 应用 29 个文件到 `voice-source`（基线 `33d3d1d9`），含新增的 `main/voice_controls.c`、`.h` 与 `tests/test_voice_controls.c`。
+- Build：PASS。ESP-IDF 5.5.3 完整 `./tools/validate.sh` 退出码 0；`Firmware layout` 与 `Merged firmware` 检查通过，应用 1,220,896 字节，位于 `0x10000` 的 `factory` 分区。C 测试覆盖三键动作、录音启动等待、取消、超时、断线及注入失败关麦。
+- 归档：`../voice-source/build/firmware/d4ffaefdbaebd33f0c3b381cf1a76db9f279dec1ce7ba35bdaf74083892b35d3/`，`archive_firmware.py verify` 通过。应用 SHA-256 为 `a5f5243f3c1a03940538a043bfb5f6efc33b5da2c7ad29bff5671678bc6d6efe`。与 Linux 归档 `6c561dc3…` 大小相同、哈希不同，符合此前跨机器构建的观察。
+- Bridge tests：PASS。目标 Mac 桥接 120 项全部通过，无跳过。
+- Script tests：8 项未通过。`voice/tests/` 的 26 项中 18 项通过；8 项 `test_scripts` 断言失败，原因均为 macOS 下 `/var` 指向 `/private/var`，测试替身直接回显 `INSTALLED_SOURCE`，而脚本用 `pwd -P` 解析物理路径。真实路径不含符号链接时两者一致，故这是测试替身的平台差异，不是脚本缺陷；此前记录来自 Linux。
+- Flash：PASS。只写 `0x10000` 应用分区，`Hash of data verified` 与 `verify OK (digest matched)` 通过；设备 MAC 为 `98:c3:77:f5:72:4c`。
+- Boot：PASS。复位后二级引导日志显示 `Loaded app from partition at offset 0x10000`，分区表与记录一致，未见 panic 或重启。
+- Device status：PASS。USB 桥接读到麦克风开启=否、桥接就绪=是、传输=usb、`power_profile` 为 `idle-v2`、`deep_wakes` 为 0、`sleep_error` 为 0、错误与丢帧均为 0、电量 97%、电压 4129 mV；快捷键配置保留修饰码 3、键码 25，说明 NVS 未被改写。
+- Bridge install：PASS。`voice/install.sh` 完成 pipx 可编辑重装，解释器保持 Python 3.14.7，`pipx` 来源核验为 `voice/bridge`；`setup` 报告 `BlackHole 2ch`（设备 78）、`Passport Mic`（设备 51）存在，默认输入仍为 `MacBook Pro麦克风`。
+- Unverified：Mac 实际键盘注入、三个键的短按／长按手感、屏幕提示、语音结束与文字完成时序、USB／Wi-Fi 切换及深睡唤醒。下一步按六个动作做设备验收。
+
+Linux 构建时磁盘临时目录空间不足，改在 `/dev/shm` 完成隔离构建；目标 Mac 使用默认 `TMPDIR`，空间充足。
 
 资料：[方案分析](../VOICE-INPUT.md)、[项目状态](../README.md)、[BlackHole](https://github.com/ExistentialAudio/BlackHole)、[macOS 听写](https://support.apple.com/guide/mac-help/use-dictation-mh40584/mac)。
