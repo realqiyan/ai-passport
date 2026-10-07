@@ -2,7 +2,7 @@
 
 首次记录：2026-10-06。更新：2026-10-07。目标：降低电池待机耗电，并缩短按键后的恢复等待。
 
-最新阶段见[2026-10-07 二次优化](#2026-10-07-二次优化)。第二版 `idle-v2` 尚未刷入。下方第一轮说明对应 `cafc34c`，保留当时的结论和验证边界。
+最新阶段见[2026-10-07 二次优化](#2026-10-07-二次优化)。第二版 `idle-v2` 已于 2026-10-07 在目标 Mac 重建并刷入，设备上报 `power_profile=idle-v2`；实机功耗和恢复时间仍未测量。下方第一轮说明对应 `cafc34c`，保留当时的结论和验证边界。
 
 2026-10-06 首次观察：电量从 99% 降到 0%，设备自动关机，用时不足一天。用户确认期间使用 Wi-Fi，Mac 桥接一直运行。当时未确认具体小时数、熄屏和麦克风状态；电池容量也未实测。
 
@@ -215,4 +215,22 @@ GPIO0 为三键共用 ADC 引脚。BSP 定义上键为 0 Ω 接地，因此文�
 | 完整镜像 | 1,286,288 字节；`e41148d198569f67ca73f7184e4155d12a8054e7559c6d891a7d07e30e86ebca` |
 | 匹配 ELF | `b6a39c8bb9df0de6f38c7a50164056f1894a4547619f28389b39af54c9271328` |
 
-这是本机 Linux 产物，固件归档不随 Git 传送。目标 Mac 需重建，或接收并校验完整归档。现有设备继续使用 `flash.sh`，只写 `0x10000` 应用分区，保留 NVS、引导和分区表。刷入需要用户明确授权；本轮尚未刷入。
+这是本机 Linux 产物，固件归档不随 Git 传送。目标 Mac 需重建，或接收并校验完整归档。现有设备继续使用 `flash.sh`，只写 `0x10000` 应用分区，保留 NVS、引导和分区表。
+
+### 2026-10-07 目标 Mac 重建与刷入
+
+- Apply：PASS。`apply_voice.py` 应用 26 个文件到 `voice-source`（基线 `33d3d1d9`）。
+- Gate：PASS。完整 `./tools/validate.sh` 退出码 0；布局 `app 1220752 / 8323072 bytes in 'factory' at 0x10000`；独立 `archive_firmware.py verify` 通过。仓库检查、BSP、音频、低功耗、BLE、Wi-Fi 及语音协议与深睡主机测试全部通过。
+- Bridge tests：PASS。macOS 本机 105 项中 104 项通过、1 项跳过。
+- Bridge install：PASS。`pipx install --force -e voice/bridge` 与 `passport-voice setup` 成功；BlackHole 2ch 与 `Passport Mic` 均存在，默认输入仍为内置麦克风。
+- 归档：`efc230fac25cc6485f8b51b555efb8b88c7bdeece796c76f0279b0ef9b620e1f`，与 Linux 归档字节数相同但哈希不同，属独立重建。
+
+| 产物 | 大小 / SHA-256 |
+| --- | --- |
+| 应用 `FoloToy-AI-Passport.bin` | 1,220,752 字节；`266235e18711acaea37f8d6fd1706eb6362302937c1125c60a56b630208643ec` |
+| 完整镜像 | 1,286,288 字节；`efc230fac25cc6485f8b51b555efb8b88c7bdeece796c76f0279b0ef9b620e1f` |
+| 匹配 ELF | `6c520d3eb8d765800a6f84c16fb74a5f1224d0555046fb63d441dcaece0b4a35` |
+
+- Flash：PASS。只写 `0x10000` 应用分区，回读摘要一致；设备 MAC 为 `98:c3:77:f5:72:4c`，与前次记录相同。
+- 设备状态：PASS。USB 桥接读到 `power_profile=idle-v2`、`mic=false`、`codec_asleep=true`、`usb_host=true`、`deep_wakes=0`、`sleep_error=0`、电量 50%、电压 3943 mV、`drops=0`。新固件已在运行。
+- 未验证：进入深睡与上键唤醒、`deep_wakes` 增长、真实恢复时间、USB 与 Wi-Fi 出字、重复开关麦、整机深睡电流和隔夜耗电。`deep_wakes=0` 只说明本次冷启动后未再深睡，不能说明深睡路径可用。

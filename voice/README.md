@@ -434,7 +434,7 @@ PYTHON="$(pipx environment --value PIPX_LOCAL_VENVS)/passport-voice-bridge/bin/p
 
 脚本先检查 ESP32-C3 镜像，再读取设备 `0x8000` 的分区表。只有 `0x10000` 为未加密的 factory 应用分区，且镜像能放下时才执行写入。随后运行 `verify_flash`。镜像在检查前复制到临时目录，防止检查后源文件被替换。
 
-当前应用镜像大小为 1,216,640 字节。2026-10-06 刷写使用归档 `ffd1247f25447f2474018e194c3a8b5a1fb06a816ce1838ebbe668163144ce45`，应用 SHA-256 `790d63372e71633744f2cd6ba19901c32143cfd085a1436cf589aee1c17c2fa8`；更早的归档为 `bbd52b10…`（1,212,512 字节）和 `8bd71c1d…`。不同机器重建可能产生不同哈希。脚本不写 `0x0` 的合并镜像，不改引导、分区表或 NVS。
+当前应用镜像大小为 1,220,752 字节。2026-10-07 在目标 Mac 重建并刷入，归档 `efc230fac25cc6485f8b51b555efb8b88c7bdeece796c76f0279b0ef9b620e1f`，应用 SHA-256 `266235e18711acaea37f8d6fd1706eb6362302937c1125c60a56b630208643ec`；更早的归档为 `ffd1247f…`（1,216,640 字节）、`bbd52b10…`（1,212,512 字节）和 `8bd71c1d…`。不同机器重建可能产生不同哈希。脚本不写 `0x0` 的合并镜像，不改引导、分区表或 NVS。
 
 ## 音频与协议
 
@@ -541,5 +541,15 @@ PYTHON="$(pipx environment --value PIPX_LOCAL_VENVS)/passport-voice-bridge/bin/p
 - 设备状态：PASS。USB 桥接读到 `power_profile` 为 `idle-v1`、`codec_asleep` 为 true、电量 95%、电压 4099 mV、`drops` 为 0，说明新固件在运行。
 - Bridge install：PASS。`pipx install --force -e voice/bridge` 与 `passport-voice setup` 成功；退出桥接后默认输入已还原。
 - 未验证：实际电流、续航、30/60 秒空闲后的熄屏与停无线、三键唤醒、重复开关麦、Mac 断线重连。详见[耗电排查](POWER.md#2026-10-06-目标-mac-重建与刷机)。
+
+### 2026-10-07 省电第二版在目标 Mac 重建并刷入
+
+- Apply：PASS。`apply_voice.py` 应用 26 个文件到 `voice-source`（基线 `33d3d1d9`）。
+- Gate：PASS。完整 `./tools/validate.sh` 退出码 0，布局检查 `app 1220752 / 8323072 bytes in 'factory' at 0x10000`，归档校验通过。
+- Bridge tests：PASS。macOS 本机 105 项中 104 项通过、1 项跳过。
+- Bridge install：PASS。`pipx install --force -e voice/bridge` 与 `passport-voice setup` 成功，退出桥接后默认输入已还原。
+- Flash：PASS。只写 `0x10000` 应用分区，回读摘要一致。
+- 设备状态：PASS。USB 桥接读到 `power_profile` 为 `idle-v2`、`codec_asleep` 为 true、`usb_host` 为 true、`deep_wakes` 为 0、`sleep_error` 为 0、电量 50%、电压 3943 mV，说明新固件在运行。
+- 未验证：深睡与上键唤醒、恢复时间、USB 与 Wi-Fi 出字、重复开关麦、整机深睡电流和隔夜耗电。验收步骤见[耗电排查的待办清单](POWER.md#2026-10-07-二次优化)。
 
 资料：[方案分析](../VOICE-INPUT.md)、[项目状态](../README.md)、[BlackHole](https://github.com/ExistentialAudio/BlackHole)、[macOS 听写](https://support.apple.com/guide/mac-help/use-dictation-mh40584/mac)。
