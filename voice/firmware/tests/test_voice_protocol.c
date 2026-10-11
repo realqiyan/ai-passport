@@ -56,10 +56,14 @@ int main(void) {
         voice_password_valid("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"));
     assert(
         !voice_password_valid("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"));
-    assert(voice_ready_fresh(2999, 1));
-    assert(!voice_ready_fresh(3001, 1));
-    assert(!voice_ready_fresh(1, 0));
-    assert(voice_ready_fresh(5, 0xfffffff0u));
+    assert(voice_ready_fresh(14999, 1, true));
+    assert(!voice_ready_fresh(15001, 1, true));
+    assert(!voice_ready_fresh(1, 0, true));
+    assert(voice_ready_fresh(5, 0xfffffff0u, true));
+    assert(voice_ready_fresh(2999, 1, false));
+    assert(!voice_ready_fresh(3001, 1, false));
+    assert(!voice_ready_fresh(1, 0, false));
+    assert(voice_ready_fresh(5, 0xfffffff0u, false));
     assert(!voice_should_blank(29999999, 0, false, false, true));
     assert(voice_should_blank(30000000, 0, false, false, true));
     assert(!voice_should_blank(30000000, 1, false, false, true));

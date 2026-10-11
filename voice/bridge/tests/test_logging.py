@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from voice_bridge.cli import _run, main, run
+from voice_bridge.cli import _run, idle_heartbeat, main, run
 from voice_bridge.log import StatusLogger, format_status, log, timestamp, persistent_log
 from voice_bridge.protocol import STATUS
 
@@ -228,20 +228,98 @@ class LoggingTests(unittest.TestCase):
         self.assertEqual([c.args[0] for c in output.call_args_list],
                          ['音频丢帧：累计 1 帧。', '音频丢帧：累计 4 帧。'])
 
-    def test_alternating_reconnect_errors_are_bounded_unless_verbose(self):
-        for verbose, count in ((False, 1), (True, 4)):
+    def test_reconnect_errors_stay_quiet_until_connected_unless_verbose(self):
+        for verbose, count in ((False, 2), (True, 5)):
             args = SimpleNamespace(auto=True, serial=None, host=None, discover=True,
                                    token_file=Path('token'), verbose=verbose)
             selector = Mock()
             selector.usb.return_value = None
-            errors = [ConnectionError(message) for message in ('a', 'b', 'a', 'b')]
+            errors = iter(ConnectionError(message) for message in (
+                'Device disconnected', 'timed out', 'No route to host',
+                'Host is down', 'Device disconnected'))
+            attempts = 0
+
+            def attempt(args, *, on_connected):
+                nonlocal attempts
+                attempts += 1
+                if attempts == 5:
+                    on_connected()
+                if attempts == 6:
+                    return 0
+                raise next(errors)
             with patch('voice_bridge.cli.AutoSelector', return_value=selector), \
                     patch('voice_bridge.cli.read_token', return_value='a' * 64), \
-                    patch('voice_bridge.cli._run', side_effect=errors + [0]), \
-                    patch('voice_bridge.cli.time.monotonic', return_value=10), \
+                    patch('voice_bridge.cli._run', side_effect=attempt), \
+                    patch('voice_bridge.cli.time.monotonic', side_effect=range(0, 3600, 60)), \
                     patch('voice_bridge.cli.time.sleep'), patch('voice_bridge.cli.log') as output:
                 self.assertEqual(run(args), 0)
             self.assertEqual(output.call_count, count)
+            if not verbose:
+                self.assertEqual([call.args[0] for call in output.call_args_list],
+                                 ['连接暂不可用，继续等待：Device disconnected'] * 2)
+
+    def test_idle_heartbeat_requires_capability_and_known_inactive_state(self):
+        idle = dict(STATUS_SAMPLE, idle_heartbeat=True)
+        self.assertTrue(idle_heartbeat(idle))
+        for key in ('idle_heartbeat', 'screen_off', 'mic', 'audio', 'recording'):
+            changed = dict(idle)
+            changed.pop(key)
+            self.assertFalse(idle_heartbeat(changed))
+            changed[key] = not idle[key]
+            self.assertFalse(idle_heartbeat(changed))
+
+    def test_idle_heartbeat_negotiates_immediately_and_resumes_active_timeout(self):
+        session, sink = Mock(), Mock()
+        session.request.return_value = {'transport': 'wifi'}
+        args = SimpleNamespace(serial=None, host='192.0.2.1', output='test',
+                               mic_device='', shortcut=None)
+        clock = [0]
+        idle = dict(STATUS_SAMPLE, idle_heartbeat=True)
+        steps = iter([(0, [frame(idle)]), (4, []), (5, []),
+                      (6, [frame(dict(idle, screen_off=False))]), (10, [])])
+
+        def receive():
+            clock[0], frames = next(steps)
+            return frames
+
+        session.receive.side_effect = receive
+        with patch('voice_bridge.cli.open_session', return_value=session), \
+                patch('voice_bridge.audio.AudioSink', return_value=sink), \
+                patch('voice_bridge.cli.Injector'), patch('voice_bridge.cli.trusted', return_value=True), \
+                patch('voice_bridge.cli.time.monotonic', side_effect=lambda: clock[0]), \
+                patch('voice_bridge.cli.log'):
+            with self.assertRaisesRegex(TimeoutError, '3 seconds'):
+                _run(args)
+        self.assertEqual([call.kwargs for call in session.send.call_args_list],
+                         [{'active': True, 'idle': True},
+                          {'active': True, 'idle': True},
+                          {'active': True, 'idle': False}, {'active': False}])
+
+    def test_silent_idle_device_times_out_and_legacy_keeps_fast_heartbeat(self):
+        for capability, end, timeout in ((True, 16, 15), (False, 4, 3)):
+            with self.subTest(capability=capability):
+                session = Mock()
+                session.request.return_value = {'transport': 'wifi'}
+                args = SimpleNamespace(serial=None, host='192.0.2.1', output='test',
+                                       mic_device='', shortcut=None)
+                clock = [0]
+                steps = iter([(0, [frame(dict(STATUS_SAMPLE, idle_heartbeat=capability))]),
+                              (1, []), (end, [])])
+
+                def receive():
+                    clock[0], frames = next(steps)
+                    return frames
+
+                session.receive.side_effect = receive
+                with patch('voice_bridge.cli.open_session', return_value=session), \
+                        patch('voice_bridge.audio.AudioSink'), patch('voice_bridge.cli.Injector'), \
+                        patch('voice_bridge.cli.trusted', return_value=True), \
+                        patch('voice_bridge.cli.time.monotonic', side_effect=lambda: clock[0]), \
+                        patch('voice_bridge.cli.log'):
+                    with self.assertRaisesRegex(TimeoutError, f'{timeout} seconds'):
+                        _run(args)
+                expected = {'active': True, 'idle': True} if capability else {'active': True}
+                self.assertEqual(session.send.call_args_list[0].kwargs, expected)
 
     def test_fatal_error_is_visible_and_each_line_has_a_timestamp(self):
         stderr = io.StringIO()

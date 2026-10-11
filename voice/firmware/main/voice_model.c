@@ -46,8 +46,8 @@ bool voice_password_valid(const char *password) {
     return true;
 }
 
-bool voice_ready_fresh(uint32_t now_ms, uint32_t last_ms) {
-    return last_ms != 0 && (uint32_t)(now_ms - last_ms) < 3000;
+bool voice_ready_fresh(uint32_t now_ms, uint32_t last_ms, bool idle) {
+    return last_ms != 0 && (uint32_t)(now_ms - last_ms) < (idle ? 15000u : 3000u);
 }
 
 bool voice_should_blank(int64_t now_us, int64_t last_input_us,

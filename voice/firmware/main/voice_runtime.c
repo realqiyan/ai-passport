@@ -35,6 +35,7 @@ _Atomic uint32_t voice_deep_wakes;
 _Atomic int voice_sleep_error;
 _Atomic int voice_error;
 static _Atomic uint32_t ready_usb, ready_wifi;
+static _Atomic bool idle_usb, idle_wifi;
 static _Atomic uint32_t ip_address;
 static _Atomic uint8_t shortcut_mod = 3, shortcut_key = 0x19;
 static _Atomic bool wifi_got_ip, wifi_wanted;
@@ -81,7 +82,7 @@ static _Atomic uint32_t wifi_start_ms, wifi_associated_ms, wifi_ip_ms, wifi_read
 bool voice_bridge_ready(void) {
     uint32_t last = voice_wifi_mode ? ready_wifi : ready_usb;
     uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
-    return voice_ready_fresh(now, last);
+    return voice_ready_fresh(now, last, voice_wifi_mode ? idle_wifi : idle_usb);
 }
 uint8_t voice_modifier(void) {
     return shortcut_mod;
@@ -270,7 +271,7 @@ static void status(bool wifi) {
     char json[1024], ip[32];
     voice_ip(ip, sizeof(ip));
     int n = snprintf(json, sizeof(json),
-                     "{\"ack\":%lu,\"result\":\"%s\",\"mic\":%s,\"audio\":%s,\"bridge\":%s,"
+                     "{\"idle_heartbeat\":true,\"ack\":%lu,\"result\":\"%s\",\"mic\":%s,\"audio\":%s,\"bridge\":%s,"
                      "\"recording\":%s,\"session\":%lu,\"transport\":\"%s\",\"ip\":\"%s\",\"error\":%d,\"drops\":%lu,"
                      "\"modifiers\":%u,\"key\":%u,\"rate\":16000,\"channels\":1,\"bits\":16,"
                      "\"auto_transport\":%s,\"power_profile\":\"idle-v3\",\"battery_pct\":%d,\"battery_mv\":%d,"
@@ -388,12 +389,16 @@ static void command(uint8_t type, uint32_t sequence, const uint8_t *data, size_t
         cJSON *active = cJSON_GetObjectItemCaseSensitive(obj, "active");
         if (cJSON_IsBool(active)) {
             uint32_t now = cJSON_IsTrue(active) ? (uint32_t)(esp_timer_get_time() / 1000) : 0;
+            bool idle = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(obj, "idle"));
             if (wifi) {
+                idle_wifi = idle;
                 ready_wifi = now;
                 if (now && !wifi_ready_ms)
                     wifi_ready_ms = now;
-            } else
+            } else {
+                idle_usb = idle;
                 ready_usb = now;
+            }
             snprintf(result, sizeof(result), "ok");
         }
     } else if (op && !strcmp(op, "transport")) {
@@ -498,6 +503,7 @@ esp_err_t voice_runtime_pause(void) {
     transport_sleep_error = ESP_OK;
     sleep_requested = true;
     xTaskNotifyGive(battery_worker);
+    xTaskNotifyGive(audio_worker);
     int64_t deadline = esp_timer_get_time() + 1500000;
     while ((!transport_paused || !audio_paused || !battery_paused) && esp_timer_get_time() < deadline)
         vTaskDelay(pdMS_TO_TICKS(10));
@@ -557,8 +563,12 @@ static void transport_task(void *arg) {
                 }
             }
         }
+        if (voice_mic && !voice_audio && audio_worker)
+            xTaskNotifyGive(audio_worker);
         int64_t now = esp_timer_get_time();
-        if (now - last_status_sent >= (voice_mic ? 500000 : 1500000)) {
+        bool idle = voice_screen_off && !voice_mic && !voice_audio && !voice_recording &&
+                    (voice_wifi_mode ? idle_wifi : idle_usb);
+        if (now - last_status_sent >= (voice_mic ? 500000 : idle ? 5000000 : 1500000)) {
             if (ready_usb > 0)
                 status(false);
             if (client >= 0 && authenticated)
@@ -587,7 +597,7 @@ static void audio_task(void *arg) {
                 pause_for_sleep(&audio_paused);
                 continue;
             }
-            vTaskDelay(pdMS_TO_TICKS(100));
+            (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
             continue;
         }
         if (!opened) {

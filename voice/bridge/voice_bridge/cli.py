@@ -194,7 +194,6 @@ def run(args):
         waiting_since = None
         disconnected_at = None
         last_error = None
-        last_error_at = 0
 
         def connected():
             nonlocal failures, waiting_since, disconnected_at, last_error
@@ -229,10 +228,9 @@ def run(args):
                 if selector and args.serial:
                     selector.failed(args.serial)
                 if selector and str(error) != last_error:
-                    now = time.monotonic()
-                    if last_error is None or getattr(args, "verbose", False) or now - last_error_at >= 30:
+                    if last_error is None or getattr(args, "verbose", False):
                         log(f"连接暂不可用，继续等待：{error}", file=sys.stderr)
-                        last_error, last_error_at = str(error), now
+                    last_error = str(error)
                 if waiting_since is None:
                     waiting_since = time.monotonic()
                     disconnected_at = timestamp()
@@ -242,6 +240,12 @@ def run(args):
                 if automatic and getattr(args, "host", None):
                     args.discover = failures % 2 == 0
                 time.sleep(1)
+
+def idle_heartbeat(status):
+    return bool(status and status.get("idle_heartbeat") is True and
+                status.get("screen_off") is True and
+                all(status.get(key) is False for key in ("mic", "audio", "recording")))
+
 
 def _run(args, *, on_connected=None):
     from .audio import AudioSink
@@ -279,6 +283,7 @@ def _run(args, *, on_connected=None):
                   "device cannot send the shortcut.", file=sys.stderr)
             log(f"Allow the terminal application, or {sys.executable}, in System Settings > "
                   "Privacy & Security > Accessibility.", file=sys.stderr)
+        heartbeat_idle = False
         heartbeat = time.monotonic()
         received = heartbeat
         latest = None
@@ -343,13 +348,19 @@ def _run(args, *, on_connected=None):
                     status_logger.update(status)
                     latest = status
             now = time.monotonic()
-            if now - received > 3:
-                raise TimeoutError("No device frames for 3 seconds")
+            idle = idle_heartbeat(latest)
+            timeout = 15 if idle else 3
+            if now - received > timeout:
+                raise TimeoutError(f"No device frames for {timeout} seconds")
             if latest and latest.get("audio") and not sink.stream.active:
                 raise RuntimeError("Audio output stopped")
-            if now - heartbeat >= 1:
-                session.send("ready", active=True)
+            if idle != heartbeat_idle or now - heartbeat >= (5 if idle else 1):
+                if latest and latest.get("idle_heartbeat") is True:
+                    session.send("ready", active=True, idle=idle)
+                else:
+                    session.send("ready", active=True)
                 heartbeat = now
+                heartbeat_idle = idle
             selector = getattr(args, "_selector", None)
             if selector and not args.serial and now - usb_checked_at >= 1:
                 usb_checked_at = now
