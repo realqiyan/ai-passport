@@ -80,10 +80,11 @@ class ProcessTests(unittest.TestCase):
             '113 /other/bin/python -m voice_bridge.cli',
             '114 /other/bin/python /other/bin/passport-voice --help',
             '115 /other/bin/python /other/bin/passport-voice setup',
+            '116 /pipx env/bin/python /user bin/passport-voice --verbose',
         ])
         with patch.object(lifecycle.sys, 'executable', python), patch.object(lifecycle.sys, 'argv', ['/pipx env/bin/passport-voice']), patch.object(lifecycle.subprocess, 'run', return_value=Mock(stdout=listing)):
             self.assertEqual(lifecycle.bridge_processes(legacy),
-                             ({101, 102, 104, 110, 111, 112}, {103, 105, 113}))
+                             ({101, 102, 104, 110, 111, 112, 116}, {103, 105, 113}))
 
     def test_relative_legacy_directory_recognizes_module_and_python_alias(self):
         legacy = Path('legacy voice/.local')

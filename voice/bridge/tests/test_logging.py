@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from voice_bridge.cli import _run, main, run
-from voice_bridge.log import format_status, log, timestamp
+from voice_bridge.log import StatusLogger, format_status, log, timestamp, persistent_log
 from voice_bridge.protocol import STATUS
 
 
@@ -124,7 +124,7 @@ class LoggingTests(unittest.TestCase):
         self.assertEqual(summaries, [f"；等待=4.0 s；重试=2 次；等待开始={STAMP}",
                                     "；等待=3.0 s；重试=1 次；等待开始=2026-10-07 08:10:00.000+08:00"])
 
-    def capture_session(self, statuses, *, ready_error=None, shortcut=None):
+    def capture_session(self, statuses, *, ready_error=None, shortcut=None, verbose=True):
         session, sink, injector = Mock(), Mock(), Mock()
         stdout, stderr = io.StringIO(), io.StringIO()
 
@@ -138,7 +138,7 @@ class LoggingTests(unittest.TestCase):
         session.request.side_effect = request
         session.receive.side_effect = [[frame(status)] for status in statuses] + [KeyboardInterrupt]
         args = SimpleNamespace(serial=None, host="192.0.2.1", output="BlackHole 2ch",
-                               mic_device="", shortcut=shortcut)
+                               mic_device="", shortcut=shortcut, verbose=verbose)
         expected_error = type(ready_error) if ready_error else KeyboardInterrupt
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr), \
                 patch("voice_bridge.log.timestamp", return_value=STAMP), \
@@ -181,6 +181,67 @@ class LoggingTests(unittest.TestCase):
                          " | session=7 | ending=否 | modifiers=3 | key=25 | extra=保留"
                          " | 实际修饰键=5 | 实际键码=44\n")
         injector.send.assert_called_once_with(5, 44)
+
+    def test_default_status_noise_does_not_reach_terminal_or_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'bridge.log'
+            with persistent_log(path):
+                statuses = [{**STATUS_SAMPLE, 'battery_mv': 3900 + i % 3,
+                             'battery_pct': 98 - i // 30, 'ack': i, 'uptime_s': i,
+                             'screen_off': i >= 30, 'new_sensor': i} for i in range(120)]
+                stdout, stderr, _ = self.capture_session(statuses, verbose=False)
+            self.assertEqual(stdout, '')
+            self.assertEqual(len(stderr.splitlines()), 1)  # Connection established.
+            self.assertEqual(len(path.read_text().splitlines()), 1)
+
+    def test_default_recording_is_concise_and_successful_keys_are_quiet(self):
+        start = {'event': 'recording', 'session': 7, 'ending': False, 'modifiers': 3, 'key': 25}
+        end = {**start, 'ending': True}
+        key = {'event': 'key', 'modifiers': 0, 'key': 40}
+        stdout, _, injector = self.capture_session([start, key, end], verbose=False)
+        self.assertEqual(stdout, f'[{STAMP}] 录音开始。\n[{STAMP}] 录音结束。\n')
+        self.assertEqual(injector.send.call_count, 3)
+
+    def test_default_errors_and_recovery_are_not_hidden_or_repeated(self):
+        reporter = StatusLogger()
+        with patch('voice_bridge.log.log') as output:
+            for error in (0, 17, 17, 0, 0):
+                reporter.update({'error': error, 'sleep_error': 0})
+            reporter.update({'error': 0, 'sleep_error': 5})
+        self.assertEqual([c.args[0] for c in output.call_args_list],
+                         ['设备错误：17', '设备错误已恢复。', '休眠错误：5'])
+
+    def test_low_battery_alert_uses_hysteresis_and_ignores_unknown(self):
+        reporter = StatusLogger()
+        with patch('voice_bridge.log.log') as output:
+            for battery in (-1, 98, 10, 9, -1, 11, 10, 16, 10):
+                reporter.update({'battery_pct': battery})
+        self.assertEqual([c.args[0] for c in output.call_args_list],
+                         ['电量低：10%，请充电。'] * 2)
+
+    def test_continuous_drops_are_reported_at_most_every_thirty_seconds(self):
+        reporter = StatusLogger()
+        with patch('voice_bridge.log.log') as output, \
+                patch('voice_bridge.log.time.monotonic', side_effect=[0, 1, 29, 30]):
+            for drops in (0, 1, 2, 3, 4):
+                reporter.update({'drops': drops})
+        self.assertEqual([c.args[0] for c in output.call_args_list],
+                         ['音频丢帧：累计 1 帧。', '音频丢帧：累计 4 帧。'])
+
+    def test_alternating_reconnect_errors_are_bounded_unless_verbose(self):
+        for verbose, count in ((False, 1), (True, 4)):
+            args = SimpleNamespace(auto=True, serial=None, host=None, discover=True,
+                                   token_file=Path('token'), verbose=verbose)
+            selector = Mock()
+            selector.usb.return_value = None
+            errors = [ConnectionError(message) for message in ('a', 'b', 'a', 'b')]
+            with patch('voice_bridge.cli.AutoSelector', return_value=selector), \
+                    patch('voice_bridge.cli.read_token', return_value='a' * 64), \
+                    patch('voice_bridge.cli._run', side_effect=errors + [0]), \
+                    patch('voice_bridge.cli.time.monotonic', return_value=10), \
+                    patch('voice_bridge.cli.time.sleep'), patch('voice_bridge.cli.log') as output:
+                self.assertEqual(run(args), 0)
+            self.assertEqual(output.call_count, count)
 
     def test_fatal_error_is_visible_and_each_line_has_a_timestamp(self):
         stderr = io.StringIO()

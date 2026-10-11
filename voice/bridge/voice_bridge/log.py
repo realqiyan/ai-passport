@@ -4,6 +4,7 @@ import contextlib
 import logging
 from logging.handlers import RotatingFileHandler
 import sys
+import time
 
 _file_handler = None
 
@@ -109,3 +110,38 @@ def format_status(status):
     if extra:
         lines.append("扩展字段 | " + " | ".join(extra))
     return "\n".join(lines)
+
+
+class StatusLogger:
+    """Report actionable changes; retain complete snapshots in verbose mode."""
+    def __init__(self, verbose=False):
+        self.verbose = verbose
+        self.previous = {}
+        self.low_battery = False
+        self.drops_reported = 0
+        self.drops_at = None
+
+    def update(self, status):
+        snapshot = {key: value for key, value in status.items() if key not in ("ack", "uptime_s")}
+        if self.verbose:
+            if snapshot != self.previous:
+                log(format_status(status))
+        else:
+            for key, label in (("error", "设备错误"), ("sleep_error", "休眠错误")):
+                value = status.get(key)
+                if isinstance(value, int) and value != self.previous.get(key, 0):
+                    log(f"{label}：{value}" if value else f"{label}已恢复。", file=sys.stderr)
+            battery = status.get("battery_pct", -1)
+            if isinstance(battery, int):
+                if 0 <= battery <= 10 and not self.low_battery:
+                    log(f"电量低：{battery}%，请充电。", file=sys.stderr)
+                    self.low_battery = True
+                elif battery > 15:
+                    self.low_battery = False
+            drops = status.get("drops", 0)
+            if isinstance(drops, int) and drops > self.drops_reported:
+                now = time.monotonic()
+                if self.drops_at is None or now - self.drops_at >= 30:
+                    log(f"音频丢帧：累计 {drops} 帧。", file=sys.stderr)
+                    self.drops_reported, self.drops_at = drops, now
+        self.previous = snapshot

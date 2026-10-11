@@ -16,7 +16,7 @@ from .protocol import COMMAND, PCM, STATUS, Parser, encode
 from .shortcut import Injector, trusted
 from .transport import SerialLink, TcpLink
 from .discovery import discover_host
-from .log import display_value, format_status, log, timestamp, persistent_log
+from .log import display_value, log, timestamp, persistent_log, StatusLogger
 from .automatic import AutoSelector, can_switch_to_usb
 
 MODIFIERS = {"ctrl": 1, "shift": 2, "alt": 4, "cmd": 8}
@@ -194,6 +194,7 @@ def run(args):
         waiting_since = None
         disconnected_at = None
         last_error = None
+        last_error_at = 0
 
         def connected():
             nonlocal failures, waiting_since, disconnected_at, last_error
@@ -228,8 +229,10 @@ def run(args):
                 if selector and args.serial:
                     selector.failed(args.serial)
                 if selector and str(error) != last_error:
-                    log(f"连接暂不可用，继续等待：{error}", file=sys.stderr)
-                    last_error = str(error)
+                    now = time.monotonic()
+                    if last_error is None or getattr(args, "verbose", False) or now - last_error_at >= 30:
+                        log(f"连接暂不可用，继续等待：{error}", file=sys.stderr)
+                        last_error, last_error_at = str(error), now
                 if waiting_since is None:
                     waiting_since = time.monotonic()
                     disconnected_at = timestamp()
@@ -245,6 +248,8 @@ def _run(args, *, on_connected=None):
     sink = None
     session = None
     switcher = None
+    verbose = getattr(args, "verbose", False)
+    status_logger = StatusLogger(verbose)
     try:
         session = open_session(args)
         initial = session.request("status")
@@ -294,14 +299,15 @@ def _run(args, *, on_connected=None):
                             f"{name}={display_value(value)}" for name, value in status.items())
                         if not keyboard and status.get("ending"):
                             if recording_session != status.get("session"):
-                                log(f"忽略过期结束快捷键 | {event_details}")
+                                if verbose:
+                                    log(f"忽略过期结束快捷键 | {event_details}")
                                 continue
                             recording_session = None
                         try:
                             if not trusted():
                                 raise RuntimeError("macOS does not trust this process for Accessibility")
                             if not keyboard and switcher and not status.get("ending"):
-                                if switcher.set(True):
+                                if switcher.set(True) and verbose:
                                     log(f"Default input: {switcher.name}")
                                 mic_active = True
                             modifiers, key = status.get("modifiers"), status.get("key")
@@ -311,7 +317,10 @@ def _run(args, *, on_connected=None):
                             if not keyboard and not status.get("ending"):
                                 recording_session = status.get("session")
                             label = "按键已发送" if keyboard else "快捷键已发送"
-                            log(f"{label} | {event_details} | 实际修饰键={modifiers} | 实际键码={key}")
+                            if verbose:
+                                log(f"{label} | {event_details} | 实际修饰键={modifiers} | 实际键码={key}")
+                            elif not keyboard:
+                                log("录音结束。" if status.get("ending") else "录音开始。")
                         except (RuntimeError, ValueError) as error:
                             log(f"Shortcut not sent: {error} | {event_details}", file=sys.stderr)
                             if not keyboard and not status.get("ending"):
@@ -325,16 +334,14 @@ def _run(args, *, on_connected=None):
                     if switcher and bool(status.get("mic")) != mic_active:
                         desired = bool(status.get("mic"))
                         try:
-                            if switcher.set(desired):
+                            if switcher.set(desired) and verbose:
                                 log(f"Default input: {switcher.name}" if desired
                                     else "Default input restored")
                             mic_active = desired
                         except RuntimeError as error:
                             log(f"Default input unchanged: {error}", file=sys.stderr)
-                    snapshot = {key: value for key, value in status.items() if key not in ("ack", "uptime_s")}
-                    if snapshot != latest:
-                        log(format_status(status))
-                        latest = snapshot
+                    status_logger.update(status)
+                    latest = status
             now = time.monotonic()
             if now - received > 3:
                 raise TimeoutError("No device frames for 3 seconds")
@@ -430,6 +437,8 @@ def run_options(parser):
     parser.add_argument("--mic-device", default="Passport Mic",
         help="Input device to select while recording; an empty value keeps the current default")
     parser.add_argument("--token-file", type=Path, default=DEFAULT_TOKEN)
+    parser.add_argument("--verbose", action="store_true",
+        help="Include full device status and successful key events in terminal and saved logs")
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)

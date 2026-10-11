@@ -39,6 +39,12 @@ class LaunchTests(unittest.TestCase):
         self.assertTrue(args.auto)
         self.assertIsNone(args.serial)
         self.assertTrue(args.discover)
+        self.assertFalse(args.verbose)
+
+    def test_verbose_works_for_default_and_explicit_transports(self):
+        for argv in (['--verbose'], ['auto', '--verbose'], ['usb', 'test', '--verbose'],
+                     ['wifi', '--verbose'], ['run', '--discover', '--verbose']):
+            self.assertTrue(self.launched(*argv).verbose)
 
     def test_auto_is_explicit_or_implied_by_run_options(self):
         for prefix in ([], ['auto']):

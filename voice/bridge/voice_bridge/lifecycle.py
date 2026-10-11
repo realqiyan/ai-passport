@@ -48,7 +48,7 @@ def bridge_processes(legacy_dir=None):
                str(Path(sys.executable).parent / "passport-voice")}
     if legacy_dir is not None:
         scripts.add(str(legacy_dir.parent / "bridge/.venv/bin/passport-voice"))
-    mode = r"(?:$| (?:run|auto|usb|wifi)(?:\s|$)| --(?:output|mic-device|shortcut|token-file|host-file)(?:[=\s]|$))"
+    mode = r"(?:$| (?:run|auto|usb|wifi)(?:\s|$)| --(?:output|mic-device|shortcut|token-file|host-file|verbose)(?:[=\s]|$))"
     python = r"(/.+?/(?:python[0-9.]*|Python))"
     module_pattern = re.compile(r"^" + python + r" -m voice_bridge\.cli" + mode)
     script_pattern = re.compile(r"^(?:" + python + r" )?(/.+?/passport-voice)" + mode)
