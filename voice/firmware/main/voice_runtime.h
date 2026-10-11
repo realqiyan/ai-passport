@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 extern _Atomic bool voice_mic, voice_audio, voice_wifi_mode;
+extern _Atomic bool voice_transport_auto;
 extern _Atomic bool voice_recording;
 extern _Atomic bool voice_wifi_idle, voice_screen_off, voice_codec_asleep;
 extern _Atomic int voice_battery_percent, voice_battery_mv;

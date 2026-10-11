@@ -188,4 +188,6 @@ class LoggingTests(unittest.TestCase):
                 patch("voice_bridge.log.timestamp", return_value=STAMP), \
                 patch("voice_bridge.cli.run", side_effect=PermissionError("bad token\nconfigure again")):
             self.assertEqual(main(["run", "--host", "192.0.2.1"]), 1)
-        self.assertEqual(stderr.getvalue(), f"[{STAMP}] Error: bad token\n[{STAMP}] configure again\n")
+        self.assertTrue(stderr.getvalue().endswith(
+            f"[{STAMP}] Error: bad token\n[{STAMP}] configure again\n"))
+        self.assertIn("桥接启动：PID=", stderr.getvalue())

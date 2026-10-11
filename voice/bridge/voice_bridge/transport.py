@@ -43,16 +43,29 @@ class SerialLink:
         self.serial.write_timeout = 1
         self.serial.dtr = False
         self.serial.rts = False
-        self.serial.open()
+        try:
+            self.serial.open()
+        except (OSError, serial.SerialException) as error:
+            try:
+                self.serial.close()
+            except OSError:
+                pass
+            raise ConnectionError(f"USB open failed: {error}") from error
 
     def read(self):
-        return self.serial.read(max(1, min(self.serial.in_waiting, 4096)))
+        try:
+            return self.serial.read(max(1, min(self.serial.in_waiting, 4096)))
+        except OSError as error:
+            raise ConnectionError(f"USB read failed: {error}") from error
 
     def write(self, data):
         view = memoryview(data)
         deadline = time.monotonic() + 1
         while view:
-            written = self.serial.write(view)
+            try:
+                written = self.serial.write(view)
+            except OSError as error:
+                raise ConnectionError(f"USB write failed: {error}") from error
             if not written or time.monotonic() >= deadline:
                 raise TimeoutError("Incomplete serial write")
             view = view[written:]

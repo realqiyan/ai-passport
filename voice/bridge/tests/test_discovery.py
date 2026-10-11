@@ -146,6 +146,15 @@ class DiscoverySessionTests(unittest.TestCase):
                     find.assert_not_called()
                     link.assert_not_called()
 
+    def test_cleanup_error_cannot_hide_a_stop_during_handshake(self):
+        with patch("voice_bridge.cli.discover_host", return_value='192.0.2.1'), \
+                patch("voice_bridge.cli.TcpLink") as link, \
+                patch("voice_bridge.cli.Session") as session:
+            session.return_value.request.side_effect = KeyboardInterrupt
+            link.return_value.close.side_effect = OSError('already removed')
+            with self.assertRaises(KeyboardInterrupt):
+                open_session(self.args)
+
     def test_invalid_token_stops_before_discovery_or_connection(self):
         self.args.token_file.write_text("invalid")
         with patch("voice_bridge.cli.discover_host") as find, patch("voice_bridge.cli.TcpLink") as link:
@@ -167,7 +176,8 @@ class DiscoverySessionTests(unittest.TestCase):
             self.assertEqual(len(saved), 64)
             self.assertEqual(self.args.token_file.stat().st_mode & 0o777, 0o600)
             self.assertEqual(session.return_value.request.call_args_list[0].args, ("hello",))
-            self.assertEqual(session.return_value.request.call_args_list[0].kwargs, {"token": ""})
+            self.assertEqual(session.return_value.request.call_args_list[0].kwargs,
+                             {"token": "", "timeout": 8})
             request = session.return_value.request.call_args_list[1]
             self.assertEqual(request.args, ("configure",))
             self.assertEqual(request.kwargs,

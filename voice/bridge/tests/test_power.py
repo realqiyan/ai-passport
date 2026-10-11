@@ -35,12 +35,13 @@ class PowerTests(unittest.TestCase):
         attempt.assert_called_once()
         pause.assert_not_called()
 
-    def test_usb_disconnect_keeps_existing_exit_behavior(self):
+    def test_usb_disconnect_waits_for_reconnection(self):
         args = SimpleNamespace(serial='test')
-        with patch('voice_bridge.cli._run', side_effect=ConnectionError('unplugged')) as attempt:
-            with self.assertRaises(ConnectionError):
-                run(args)
-        attempt.assert_called_once()
+        with patch('voice_bridge.cli._run', side_effect=[ConnectionError('unplugged'), 0]) as attempt, \
+                patch('voice_bridge.cli.time.sleep') as pause:
+            self.assertEqual(run(args), 0)
+        self.assertEqual(attempt.call_count, 2)
+        pause.assert_called_once_with(1)
 
     def test_stop_during_wifi_reconnect_wait_exits(self):
         args = SimpleNamespace(serial=None, host='192.0.2.1')
@@ -146,11 +147,12 @@ class PowerTests(unittest.TestCase):
         session = Mock()
         session.request.return_value = {'transport': 'usb'}
         session.link.close.side_effect = OSError('close failed')
+        session.receive.side_effect = ConnectionError('unplugged')
         args = SimpleNamespace(output='BlackHole 2ch', mic_device='', serial='test')
         with patch('voice_bridge.audio.AudioSink', return_value=sink), \
              patch('voice_bridge.cli.open_session', return_value=session), \
              patch('voice_bridge.cli.Injector'), patch('voice_bridge.cli.trusted', return_value=True):
-            with self.assertRaisesRegex(OSError, 'close failed'):
+            with self.assertRaisesRegex(ConnectionError, 'unplugged'):
                 _run(args)
         sink.stream.close.assert_called_once()
 

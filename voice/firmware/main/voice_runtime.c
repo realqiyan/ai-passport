@@ -26,6 +26,7 @@
 #include <unistd.h>
 #define VOICE_PORT 8765
 _Atomic bool voice_mic, voice_audio, voice_wifi_mode;
+_Atomic bool voice_transport_auto = true;
 _Atomic bool voice_recording;
 _Atomic bool voice_wifi_idle, voice_screen_off, voice_codec_asleep;
 _Atomic int voice_battery_percent = -1, voice_battery_mv = -1;
@@ -151,6 +152,11 @@ static esp_err_t stop_wifi(void) {
     return ESP_OK;
 }
 static void update_wifi(void) {
+    /* The bridge selects USB only after opening it. Removing USB falls back
+       to configured Wi-Fi after recording has safely stopped. */
+    if (voice_transport_auto && !voice_wifi_mode && !usb_serial_jtag_is_connected() &&
+        !voice_mic && !voice_audio && !voice_recording && config.ssid[0] && config.token[0])
+        voice_wifi_mode = true;
     bool wanted = voice_wifi_mode && !voice_wifi_idle && config.ssid[0] && config.token[0];
     if (config_changed || !wanted) {
         esp_err_t err = stop_wifi();
@@ -267,7 +273,7 @@ static void status(bool wifi) {
                      "{\"ack\":%lu,\"result\":\"%s\",\"mic\":%s,\"audio\":%s,\"bridge\":%s,"
                      "\"recording\":%s,\"session\":%lu,\"transport\":\"%s\",\"ip\":\"%s\",\"error\":%d,\"drops\":%lu,"
                      "\"modifiers\":%u,\"key\":%u,\"rate\":16000,\"channels\":1,\"bits\":16,"
-                     "\"power_profile\":\"idle-v3\",\"battery_pct\":%d,\"battery_mv\":%d,"
+                     "\"auto_transport\":%s,\"power_profile\":\"idle-v3\",\"battery_pct\":%d,\"battery_mv\":%d,"
                      "\"uptime_s\":%lu,\"screen_off\":%s,\"codec_asleep\":%s,\"wifi_idle\":%s,"
                      "\"usb_host\":%s,\"deep_wakes\":%lu,\"sleep_error\":%d,"
                      "\"wifi_start_ms\":%lu,\"wifi_associated_ms\":%lu,\"wifi_ip_ms\":%lu,\"wifi_ready_ms\":%lu}",
@@ -276,7 +282,7 @@ static void status(bool wifi) {
                      voice_recording ? "true" : "false", (unsigned long)voice_session,
                      voice_wifi_mode ? "wifi" : "usb", ip,
                      voice_error, (unsigned long)drops, voice_modifier(), voice_key(),
-                     voice_battery_percent, voice_battery_mv,
+                     voice_transport_auto ? "true" : "false", voice_battery_percent, voice_battery_mv,
                      (unsigned long)(esp_timer_get_time() / 1000000),
                      voice_screen_off ? "true" : "false", voice_codec_asleep ? "true" : "false",
                      voice_wifi_idle ? "true" : "false",
@@ -389,6 +395,20 @@ static void command(uint8_t type, uint32_t sequence, const uint8_t *data, size_t
             } else
                 ready_usb = now;
             snprintf(result, sizeof(result), "ok");
+        }
+    } else if (op && !strcmp(op, "transport")) {
+        const char *mode = str(obj, "mode");
+        cJSON *automatic = cJSON_GetObjectItemCaseSensitive(obj, "automatic");
+        /* Only the connected, authenticated link may claim itself. Never
+           switch a live recording or accept an unverified remote USB claim. */
+        if (mode && cJSON_IsBool(automatic) && !strcmp(mode, wifi ? "wifi" : "usb")) {
+            if (voice_mic || voice_audio || voice_recording)
+                snprintf(result, sizeof(result), "transport busy");
+            else {
+                voice_transport_auto = cJSON_IsTrue(automatic);
+                voice_wifi_mode = wifi;
+                snprintf(result, sizeof(result), "ok");
+            }
         }
     } else if (op && !strcmp(op, "stop")) {
         cJSON *session = cJSON_GetObjectItemCaseSensitive(obj, "session");
@@ -654,6 +674,9 @@ esp_err_t voice_runtime_init(void) {
     }
     shortcut_mod = config.modifiers;
     shortcut_key = config.key;
+    /* USB commands are always serviced. Start configured Wi-Fi so the Mac
+       can connect without a manual mode selection, including on battery. */
+    voice_wifi_mode = config.ssid[0] && config.token[0];
     /* Set a known codec standby state even before the first recording. */
     esp_err_t err = bsp_audio_init();
     if (err == ESP_OK)

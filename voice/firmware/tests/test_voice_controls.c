@@ -5,6 +5,7 @@
 #include <string.h>
 
 _Atomic bool voice_mic, voice_audio, voice_wifi_mode, voice_recording;
+_Atomic bool voice_transport_auto;
 _Atomic uint32_t voice_session;
 static bool ready = true, shortcut_ok = true, key_ok = true;
 static unsigned starts, ends, keys;
@@ -42,8 +43,9 @@ int main(void) {
     }
     assert(!starts && !ends);
     /* A long press must not also perform the short action. */
+    voice_transport_auto = true;
     assert(voice_controls_input(BSP_BTN_OK, BSP_BTN_LONG, 0));
-    assert(voice_wifi_mode && keys == 4);
+    assert(voice_wifi_mode && keys == 4 && !voice_transport_auto);
     assert(!voice_controls_input(BSP_BTN_UP, BSP_BTN_PRESS, 0));
     assert(!voice_controls_input(BSP_BTN_DOWN, BSP_BTN_DOUBLE, 0));
     assert(!voice_mic && keys == 4);

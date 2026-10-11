@@ -34,7 +34,7 @@ def setup(state_dir, legacy_dir=None):
         log(line)
     log(f"State directory: {state_dir}")
     log(f"Allow your terminal or {sys.executable} in macOS Accessibility, then restart the bridge.")
-    log("Select Passport Mic in your input method. Start with passport-voice usb or wifi.")
+    log("Select Passport Mic in your input method. Start with passport-voice (USB preferred).")
 
 
 def bridge_processes(legacy_dir=None):
@@ -48,7 +48,7 @@ def bridge_processes(legacy_dir=None):
                str(Path(sys.executable).parent / "passport-voice")}
     if legacy_dir is not None:
         scripts.add(str(legacy_dir.parent / "bridge/.venv/bin/passport-voice"))
-    mode = r" (?:run|usb|wifi)(?:\s|$)"
+    mode = r"(?:$| (?:run|auto|usb|wifi)(?:\s|$)| --(?:output|mic-device|shortcut|token-file|host-file)(?:[=\s]|$))"
     python = r"(/.+?/(?:python[0-9.]*|Python))"
     module_pattern = re.compile(r"^" + python + r" -m voice_bridge\.cli" + mode)
     script_pattern = re.compile(r"^(?:" + python + r" )?(/.+?/passport-voice)" + mode)

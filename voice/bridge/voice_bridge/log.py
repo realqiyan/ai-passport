@@ -1,6 +1,32 @@
 """Format bridge events and device status for terminal logs."""
 from datetime import datetime
+import contextlib
+import logging
+from logging.handlers import RotatingFileHandler
 import sys
+
+_file_handler = None
+
+
+@contextlib.contextmanager
+def persistent_log(path):
+    """Keep bounded diagnostics even when the terminal disappears."""
+    global _file_handler
+    previous = _file_handler
+    handler = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(path, maxBytes=1024 * 1024, backupCount=2,
+                                      encoding="utf-8")
+        _file_handler = handler
+    except OSError as error:
+        log(f"无法保存日志 {path}：{error}", file=sys.stderr)
+    try:
+        yield
+    finally:
+        _file_handler = previous
+        if handler:
+            handler.close()
 
 
 def timestamp():
@@ -11,7 +37,15 @@ def log(message, *, file=None):
     """Timestamp every line and flush it, including redirected output."""
     stamp = timestamp()
     for line in str(message).splitlines() or [""]:
-        print(f"[{stamp}] {line}", file=sys.stdout if file is None else file, flush=True)
+        text = f"[{stamp}] {line}"
+        if _file_handler is not None:
+            _file_handler.emit(logging.LogRecord("passport-voice", logging.INFO,
+                                                "", 0, text, (), None))
+        try:
+            print(text, file=sys.stdout if file is None else file, flush=True)
+        except OSError:
+            # Losing a terminal or a log pipe must not stop audio forwarding.
+            pass
 
 
 STATUS_GROUPS = (
@@ -24,6 +58,7 @@ STATUS_GROUPS = (
         ("screen_off", "屏幕熄灭"), ("codec_asleep", "编码器休眠"))),
     ("省电", (
         ("power_profile", "策略"), ("wifi_idle", "Wi-Fi停用"),
+        ("auto_transport", "自动连接"),
         ("usb_host", "USB主机"), ("deep_wakes", "深睡唤醒次数"),
         ("sleep_error", "休眠错误"), ("uptime_s", "设备运行时间"))),
     ("联网时间（启动后）", (

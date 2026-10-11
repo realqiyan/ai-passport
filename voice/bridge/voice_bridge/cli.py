@@ -16,7 +16,8 @@ from .protocol import COMMAND, PCM, STATUS, Parser, encode
 from .shortcut import Injector, trusted
 from .transport import SerialLink, TcpLink
 from .discovery import discover_host
-from .log import display_value, format_status, log, timestamp
+from .log import display_value, format_status, log, timestamp, persistent_log
+from .automatic import AutoSelector, can_switch_to_usb
 
 MODIFIERS = {"ctrl": 1, "shift": 2, "alt": 4, "cmd": 8}
 KEYS = {"space": 0x2c, "enter": 0x28, "escape": 0x29, "tab": 0x2b}
@@ -114,13 +115,16 @@ def open_session(args):
         args.host, connect_timeout=1 if reconnecting else 3)
     session = Session(link)
     try:
-        session.request("hello", token=token)
+        session.request("hello", token=token, **({"timeout": 8} if args.serial else {}))
         if not args.serial and hasattr(args, "host_file"):
             args.host_file.parent.mkdir(parents=True, exist_ok=True)
             args.host_file.write_text(args.host + "\n")
         return session
     except BaseException:
-        link.close()
+        try:
+            link.close()
+        except Exception as error:
+            log(f"连接清理失败：{error}", file=sys.stderr)
         raise
 
 def configure(args):
@@ -146,26 +150,32 @@ def configure(args):
         session.request("configure", **fields)
         log("Configuration saved." + (" Set the same shortcut in macOS." if fields else ""))
         if token:
-            log(f"Token saved at {args.token_file}. Stop the microphone, then press DOWN for Wi-Fi.")
+            log(f"Token saved at {args.token_file}. Start passport-voice for automatic connection.")
     finally:
         session.link.close()
 
+class TerminationRequested(KeyboardInterrupt):
+    def __init__(self, signum):
+        self.signum = signum
+
+
+class SwitchToUSB(ConnectionError):
+    pass
+
+
 @contextlib.contextmanager
 def graceful_termination():
-    """Turn SIGTERM and SIGHUP into KeyboardInterrupt, so cleanup blocks run.
-
-    Without this, a killed bridge would leave the system default input device
-    pointing at the microphone.
-    """
+    """Keep terminal hangups from stopping a running bridge; honor stop signals."""
     def interrupt(signum, frame):
-        raise KeyboardInterrupt
+        raise TerminationRequested(signum)
     installed = {}
-    for name in ("SIGTERM", "SIGHUP"):
+    for name in ("SIGINT", "SIGTERM", "SIGHUP"):
         number = getattr(signal, name, None)
         if number is None:
             continue
         try:
-            installed[number] = signal.signal(number, interrupt)
+            handler = signal.SIG_IGN if name == "SIGHUP" else interrupt
+            installed[number] = signal.signal(number, handler)
         except ValueError:
             pass  # Not the main thread; keep the default handlers.
     try:
@@ -175,15 +185,18 @@ def graceful_termination():
             signal.signal(number, previous)
 
 def run(args):
-    """Run the bridge. SIGTERM and SIGHUP run the same cleanup as Ctrl-C."""
+    """Keep retrying transport failures, with USB preferred in automatic mode."""
     with graceful_termination():
         automatic = getattr(args, "discover", False)
+        selector = AutoSelector() if getattr(args, "auto", False) else None
+        args._selector = selector
         failures = 0
         waiting_since = None
         disconnected_at = None
+        last_error = None
 
         def connected():
-            nonlocal failures, waiting_since, disconnected_at
+            nonlocal failures, waiting_since, disconnected_at, last_error
             details = ""
             if waiting_since is not None:
                 elapsed = time.monotonic() - waiting_since
@@ -191,18 +204,32 @@ def run(args):
                            f"；等待开始={disconnected_at}")
             failures = 0
             waiting_since = disconnected_at = None
+            last_error = None
             args._reconnecting = False
             args.discover = automatic
             return details
 
         while True:
             try:
+                if selector:
+                    args.serial = selector.usb()
+                    args.discover = not args.serial and (not args.host or failures % 2 == 0)
+                    if not args.serial:
+                        try:
+                            read_token(args.token_file)
+                        except (RuntimeError, ValueError, OSError) as error:
+                            raise ConnectionError(str(error)) from error
                 return _run(args, on_connected=connected)
-            except PermissionError:
-                raise
-            except (ConnectionError, TimeoutError):
-                if args.serial:
+            except SwitchToUSB:
+                continue
+            except (ConnectionError, TimeoutError, PermissionError) as error:
+                if isinstance(error, PermissionError) and not selector:
                     raise
+                if selector and args.serial:
+                    selector.failed(args.serial)
+                if selector and str(error) != last_error:
+                    log(f"连接暂不可用，继续等待：{error}", file=sys.stderr)
+                    last_error = str(error)
                 if waiting_since is None:
                     waiting_since = time.monotonic()
                     disconnected_at = timestamp()
@@ -222,8 +249,18 @@ def _run(args, *, on_connected=None):
         session = open_session(args)
         initial = session.request("status")
         expected = "usb" if args.serial else "wifi"
+        if "auto_transport" in initial:
+            try:
+                initial = session.request("transport", mode=expected,
+                                          automatic=bool(getattr(args, "auto", False)))
+                # Pre-selection frames belong to the previous transport.
+                # The firmware permits selection only when recording is off.
+                session.pending.clear()
+            except RuntimeError as error:
+                raise ConnectionError(f"Transport selection deferred: {error}") from error
         if initial.get("transport") != expected:
-            raise RuntimeError(f"Select {expected} on the device by holding OK before running the bridge")
+            raise ConnectionError(f"Select {expected} on the device by holding OK; "
+                                  "update firmware for automatic transport selection")
         # Reconnect probes must not repeatedly open CoreAudio while the device sleeps.
         sink = AudioSink(args.output)
         switcher = InputSwitcher(args.mic_device) if args.mic_device else None
@@ -242,6 +279,7 @@ def _run(args, *, on_connected=None):
         latest = None
         mic_active = False
         recording_session = None
+        usb_checked_at = heartbeat
         while True:
             for frame in session.receive():
                 received = time.monotonic()
@@ -305,6 +343,12 @@ def _run(args, *, on_connected=None):
             if now - heartbeat >= 1:
                 session.send("ready", active=True)
                 heartbeat = now
+            selector = getattr(args, "_selector", None)
+            if selector and not args.serial and now - usb_checked_at >= 1:
+                usb_checked_at = now
+                if can_switch_to_usb(latest, recording_session) and selector.usb():
+                    log("录音已停止，切换到 USB。", file=sys.stderr)
+                    raise SwitchToUSB
     finally:
         if switcher is not None:
             try:
@@ -317,11 +361,17 @@ def _run(args, *, on_connected=None):
                     session.send("ready", active=False)
                 except Exception:
                     pass
-                session.link.close()
+                try:
+                    session.link.close()
+                except Exception as error:
+                    log(f"连接清理失败：{error}", file=sys.stderr)
         finally:
             if sink is not None:
                 sink.buffer.clear()
-                sink.close()
+                try:
+                    sink.close()
+                except Exception as error:
+                    log(f"音频清理失败：{error}", file=sys.stderr)
 
 def serial_port(explicit):
     """Return the USB serial port, or explain how to choose one."""
@@ -348,7 +398,12 @@ def warn_missing_microphone():
 def launch(args):
     """Run a normalized link in this process, including module entry points."""
     warn_missing_microphone()
-    if args.command == "usb":
+    args.auto = args.command == "auto"
+    if args.auto:
+        args.serial = args.host = None
+        args.discover = True
+        log("自动连接：USB 优先；不可用时等待 Wi-Fi。录音中不主动切换。", file=sys.stderr)
+    elif args.command == "usb":
         args.serial = serial_port(args.address)
         args.host = None
         args.discover = False
@@ -361,7 +416,7 @@ def launch(args):
         if args.host:
             log(f"Wi-Fi 链路：{args.host}", file=sys.stderr)
         else:
-            log("正在查找局域网中的 Passport，请先在设备上选择 Wi-Fi 模式。", file=sys.stderr)
+            log("正在查找局域网中的 Passport。旧固件需在设备上选择 Wi-Fi 模式。", file=sys.stderr)
     return run(args)
 
 
@@ -400,6 +455,8 @@ def main(argv=None):
     transport.add_argument("--host")
     transport.add_argument("--discover", action="store_true", help="Find a device on the local network")
     run_options(bridge)
+    auto = commands.add_parser("auto", help="Automatically connect; prefer USB when idle (default)")
+    run_options(auto)
     for name, help_text in (
             ("usb", "Start USB; omit the port when there is one device"),
             ("wifi", "Start Wi-Fi; omit the address to discover a device")):
@@ -411,7 +468,19 @@ def main(argv=None):
     cleanup = commands.add_parser("cleanup", help="Stop this bridge and remove its input and saved state")
     cleanup.add_argument("--yes", action="store_true", help="Skip the cleanup confirmation")
     cleanup.add_argument("--legacy-state-dir", type=Path, default=state.legacy_directory())
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv or (argv[0].startswith("--") and argv[0] != "--help"):
+        argv.insert(0, "auto")
     args = parser.parse_args(argv)
+    if args.command in ("auto", "usb", "wifi", "run"):
+        path = state.directory() / "bridge.log"
+        with persistent_log(path):
+            log(f"桥接启动：PID={os.getpid()}，模式={args.command}，日志={path}", file=sys.stderr)
+            return execute(args)
+    return execute(args)
+
+
+def execute(args):
     try:
         if args.command == "devices":
             import sounddevice as sd
@@ -442,12 +511,16 @@ def main(argv=None):
         elif args.command == "cleanup":
             if not lifecycle.cleanup(DEFAULT_TOKEN.parent, args.legacy_state_dir, yes=args.yes):
                 return 1
-        elif args.command in ("usb", "wifi"):
+        elif args.command in ("auto", "usb", "wifi"):
             launch(args)
         else:
             run(args)
+    except TerminationRequested as exc:
+        name = signal.Signals(exc.signum).name
+        log(f"程序已停止：收到 {name} ({exc.signum})，PID={os.getpid()}。", file=sys.stderr)
+        return 0 if exc.signum == signal.SIGINT else 128 + exc.signum
     except KeyboardInterrupt:
-        log("程序已停止。", file=sys.stderr)
+        log(f"程序已停止：KeyboardInterrupt（Ctrl+C 或代码中断），PID={os.getpid()}。", file=sys.stderr)
         return 0
     except Exception as exc:
         log(f"Error: {exc}", file=sys.stderr)

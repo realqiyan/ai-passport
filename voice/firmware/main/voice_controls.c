@@ -11,6 +11,7 @@ const char *voice_controls_input(bsp_btn_t button, bsp_btn_ev_t event, int64_t n
     if (button == BSP_BTN_OK && event == BSP_BTN_LONG) {
         if (voice_mic || voice_audio)
             return "Stop microphone first";
+        voice_transport_auto = false;
         voice_wifi_mode = !voice_wifi_mode;
         return "Transport changed";
     }

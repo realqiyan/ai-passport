@@ -14,6 +14,9 @@ class LaunchTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.token = Path(self.temp.name) / 'token'
+        patcher = mock.patch.object(cli.state, 'directory', return_value=Path(self.temp.name))
+        patcher.start()
+        self.addCleanup(patcher.stop)
         for target, value in (('DEFAULT_TOKEN', self.token),
                               ('warn_missing_microphone', mock.Mock())):
             patcher = mock.patch.object(cli, target, value)
@@ -29,6 +32,19 @@ class LaunchTests(unittest.TestCase):
         args = self.launched('usb', '/dev/cu.test port', '--output', 'BlackHole 2ch')
         self.assertEqual(args.serial, '/dev/cu.test port')
         self.assertEqual(args.output, 'BlackHole 2ch')
+
+    def test_no_command_defaults_to_auto(self):
+        args = self.launched()
+        self.assertEqual(args.command, 'auto')
+        self.assertTrue(args.auto)
+        self.assertIsNone(args.serial)
+        self.assertTrue(args.discover)
+
+    def test_auto_is_explicit_or_implied_by_run_options(self):
+        for prefix in ([], ['auto']):
+            args = self.launched(*prefix, '--output', 'Output with spaces')
+            self.assertTrue(args.auto)
+            self.assertEqual(args.output, 'Output with spaces')
 
     def test_usb_without_port_accepts_bridge_options(self):
         with mock.patch.object(cli.glob, 'glob', return_value=['/dev/cu.usbmodem2101']):

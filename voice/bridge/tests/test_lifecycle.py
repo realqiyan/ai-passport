@@ -74,9 +74,16 @@ class ProcessTests(unittest.TestCase):
             '107 /other/bin/python /other/bin/passport-voice-helper run',
             '108 /pipx env/bin/python -c print("passport-voice wifi")',
             '109 /bin/bash -c echo passport-voice run',
+            '110 /pipx env/bin/python /user bin/passport-voice',
+            '111 /pipx env/bin/python -m voice_bridge.cli auto',
+            '112 /pipx env/bin/python /user bin/passport-voice --output BlackHole 2ch',
+            '113 /other/bin/python -m voice_bridge.cli',
+            '114 /other/bin/python /other/bin/passport-voice --help',
+            '115 /other/bin/python /other/bin/passport-voice setup',
         ])
         with patch.object(lifecycle.sys, 'executable', python), patch.object(lifecycle.sys, 'argv', ['/pipx env/bin/passport-voice']), patch.object(lifecycle.subprocess, 'run', return_value=Mock(stdout=listing)):
-            self.assertEqual(lifecycle.bridge_processes(legacy), ({101, 102, 104}, {103, 105}))
+            self.assertEqual(lifecycle.bridge_processes(legacy),
+                             ({101, 102, 104, 110, 111, 112}, {103, 105, 113}))
 
     def test_relative_legacy_directory_recognizes_module_and_python_alias(self):
         legacy = Path('legacy voice/.local')
