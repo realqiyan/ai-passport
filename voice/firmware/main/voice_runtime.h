@@ -19,6 +19,6 @@ uint8_t voice_modifier(void);
 uint8_t voice_key(void);
 void voice_ip(char *out, unsigned size);
 esp_err_t voice_runtime_init(void);
-/* Pause both workers at safe points. Resume on any reversible sleep failure. */
+/* Pause all workers at safe points. Resume on any reversible sleep failure. */
 esp_err_t voice_runtime_pause(void);
 void voice_runtime_resume(void);

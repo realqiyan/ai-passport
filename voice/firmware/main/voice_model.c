@@ -59,5 +59,13 @@ bool voice_should_blank(int64_t now_us, int64_t last_input_us,
 bool voice_should_idle_wifi(int64_t now_us, int64_t last_input_us,
                             bool mic, bool audio, bool buttons_ok) {
     return buttons_ok && !mic && !audio && now_us >= last_input_us &&
-           now_us - last_input_us >= INT64_C(60000000);
+           now_us - last_input_us >= INT64_C(900000000);
+}
+
+int voice_battery_soc_value(int soc, int64_t elapsed_us) {
+    if (soc < 0 || soc > 100 || elapsed_us < 0)
+        return -1;
+    /* CW2017 can report zero while restarting. Show voltage during this
+       bounded settling window, but allow a real empty battery afterwards. */
+    return soc == 0 && elapsed_us < INT64_C(60000000) ? -1 : soc;
 }

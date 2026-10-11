@@ -73,6 +73,15 @@ class LoggingTests(unittest.TestCase):
                          " | missing=未知（null） | empty_text=空字符串"
                          " | empty_list=空列表 | empty_object=空对象")
 
+    def test_wake_timing_and_voltage_remain_visible_while_soc_is_unknown(self):
+        status = {"battery_pct": -1, "battery_mv": 3850,
+                  "wifi_start_ms": 250, "wifi_associated_ms": 700,
+                  "wifi_ip_ms": 950, "wifi_ready_ms": 0}
+        self.assertEqual(format_status(status),
+                         "电量与屏幕 | 电量=未知（-1） | 电压=3850 mV\n"
+                         "联网时间（启动后） | 开始联网=250 ms | 关联完成=700 ms"
+                         " | 取得IP=950 ms | 桥接首次就绪=0 ms")
+
     def test_discovery_timeout_and_cached_address_retries_are_silent(self):
         stdout, stderr = io.StringIO(), io.StringIO()
         with tempfile.TemporaryDirectory() as directory:

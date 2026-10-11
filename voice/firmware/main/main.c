@@ -1,4 +1,3 @@
-#include "bsp_battery.h"
 #include "bsp_button.h"
 #include "bsp_display.h"
 #include "bsp_display_power.h"
@@ -45,7 +44,8 @@ static void ui_create(void) {
     lv_obj_set_width(title, 100);
     lv_obj_align(title, LV_ALIGN_TOP_LEFT, 16, 22);
     battery_label = label(screen, 24, &lv_font_montserrat_14, 0xbac8d6);
-    lv_obj_set_width(battery_label, 60);
+    lv_obj_set_width(battery_label, 76);
+    lv_label_set_text(battery_label, "--%");
     lv_obj_align(battery_label, LV_ALIGN_TOP_RIGHT, -16, 24);
     mic_label = label(screen, 75, &lv_font_montserrat_20, 0xf4f7fb);
     link_label = label(screen, 112, &lv_font_montserrat_14, 0xbac8d6);
@@ -93,7 +93,6 @@ void app_main(void) {
     ui_create();
     bsp_lvgl_unlock();
     bsp_display_backlight(25);
-    bool battery_ok = bsp_battery_init() == ESP_OK;
     esp_err_t err = nvs_flash_init(); /* Never erase NVS to hide an error. */
     if (err == ESP_OK)
         err = voice_runtime_init();
@@ -104,8 +103,6 @@ void app_main(void) {
     bool buttons_ok = bsp_button_init(button, NULL) == ESP_OK;
     if (!buttons_ok)
         message = "Buttons unavailable";
-    int battery = -1;
-    int64_t battery_at = -30000000;
     int64_t last_input = esp_timer_get_time();
     bool screen_off = false;
     bool wake_only = false;
@@ -146,12 +143,6 @@ void app_main(void) {
         const char *control_message = voice_controls_tick(now);
         if (control_message)
             show_message(control_message);
-        if (now - battery_at >= 30000000) {
-            battery = battery_ok ? bsp_battery_soc() : -1;
-            voice_battery_percent = battery;
-            voice_battery_mv = battery_ok ? bsp_battery_mv() : -1;
-            battery_at = now;
-        }
         if (!bsp_lvgl_lock(100))
             continue;
         bool blank = voice_should_blank(now, last_input, voice_mic, voice_audio, buttons_ok);
@@ -175,7 +166,10 @@ void app_main(void) {
             continue;
         }
         char text[128], ip[32];
-        if (battery < 0)
+        int battery = voice_battery_percent, mv = voice_battery_mv;
+        if (battery < 0 && mv > 0)
+            snprintf(text, sizeof(text), "%d.%02dV", mv / 1000, mv % 1000 / 10);
+        else if (battery < 0)
             snprintf(text, sizeof(text), "--%%");
         else
             snprintf(text, sizeof(text), "%d%%", battery);

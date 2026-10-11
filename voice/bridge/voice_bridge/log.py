@@ -26,13 +26,17 @@ STATUS_GROUPS = (
         ("power_profile", "策略"), ("wifi_idle", "Wi-Fi停用"),
         ("usb_host", "USB主机"), ("deep_wakes", "深睡唤醒次数"),
         ("sleep_error", "休眠错误"), ("uptime_s", "设备运行时间"))),
+    ("联网时间（启动后）", (
+        ("wifi_start_ms", "开始联网"), ("wifi_associated_ms", "关联完成"),
+        ("wifi_ip_ms", "取得IP"), ("wifi_ready_ms", "桥接首次就绪"))),
     ("诊断", (
         ("error", "错误"), ("drops", "丢帧"), ("rate", "采样率"),
         ("channels", "声道"), ("bits", "位深"), ("modifiers", "快捷键修饰"),
         ("key", "键码"), ("ack", "应答编号"), ("result", "结果"))),
 )
 UNITS = {"battery_pct": "%", "battery_mv": " mV", "uptime_s": " s",
-         "rate": " Hz", "bits": " bit"}
+         "rate": " Hz", "bits": " bit", "wifi_start_ms": " ms",
+         "wifi_associated_ms": " ms", "wifi_ip_ms": " ms", "wifi_ready_ms": " ms"}
 
 
 def display_value(value):

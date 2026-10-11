@@ -1,8 +1,11 @@
 #include "voice_runtime.h"
 #include "bsp_audio.h"
+#include "bsp_battery.h"
 #include "cJSON.h"
 #include "driver/usb_serial_jtag.h"
 #include "esp_event.h"
+#include "esp_attr.h"
+#include "esp_system.h"
 #include "esp_log.h"
 #include "esp_pm.h"
 #include "esp_netif.h"
@@ -50,8 +53,8 @@ typedef struct {
 } audio_chunk_t;
 static QueueHandle_t pcm_queue, shortcut_queue;
 static esp_pm_lock_handle_t audio_power_lock;
-static TaskHandle_t transport_worker, audio_worker;
-static _Atomic bool sleep_requested, transport_paused, audio_paused;
+static TaskHandle_t transport_worker, audio_worker, battery_worker;
+static _Atomic bool sleep_requested, transport_paused, audio_paused, battery_paused;
 static _Atomic int transport_sleep_error;
 typedef struct {
     int64_t requested_at;
@@ -70,6 +73,10 @@ static uint32_t ack_sequence;
 static bool wifi_started;
 static bool config_changed;
 static int64_t last_status_sent;
+/* Only a scan-order hint. IDF searches other channels if this one misses.
+   Keep it across deep sleep without writing flash or locking a BSSID. */
+static RTC_DATA_ATTR _Atomic uint32_t last_wifi_channel;
+static _Atomic uint32_t wifi_start_ms, wifi_associated_ms, wifi_ip_ms, wifi_ready_ms;
 bool voice_bridge_ready(void) {
     uint32_t last = voice_wifi_mode ? ready_wifi : ready_usb;
     uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
@@ -92,16 +99,23 @@ static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     (void)arg;
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START && wifi_wanted)
         (void)esp_wifi_connect();
+    if (base == WIFI_EVENT && id == WIFI_EVENT_STA_CONNECTED && wifi_wanted) {
+        const wifi_event_sta_connected_t *event = data;
+        last_wifi_channel = event->channel;
+        wifi_associated_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    }
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         wifi_got_ip = false;
         ip_address = 0;
         ready_wifi = 0;
+        wifi_associated_ms = wifi_ip_ms = wifi_ready_ms = 0;
         if (wifi_wanted)
             (void)esp_wifi_connect();
     }
     if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP && wifi_wanted) {
         ip_event_got_ip_t *event = data;
         ip_address = event->ip_info.ip.addr;
+        wifi_ip_ms = (uint32_t)(esp_timer_get_time() / 1000);
         wifi_got_ip = true;
     }
 }
@@ -133,6 +147,7 @@ static esp_err_t stop_wifi(void) {
     }
     wifi_got_ip = false;
     ip_address = 0;
+    wifi_associated_ms = wifi_ip_ms = wifi_ready_ms = 0;
     return ESP_OK;
 }
 static void update_wifi(void) {
@@ -151,6 +166,11 @@ static void update_wifi(void) {
         memcpy(sta.sta.password, config.password, strlen(config.password));
         sta.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
         sta.sta.pmf_cfg.capable = true;
+        uint32_t channel = last_wifi_channel;
+        sta.sta.channel = channel <= 14 ? channel : 0;
+        sta.sta.scan_method = WIFI_FAST_SCAN;
+        wifi_start_ms = (uint32_t)(esp_timer_get_time() / 1000);
+        wifi_associated_ms = wifi_ip_ms = wifi_ready_ms = 0;
         wifi_wanted = true;
         esp_err_t err = esp_wifi_set_config(WIFI_IF_STA, &sta);
         if (err == ESP_OK)
@@ -241,15 +261,16 @@ static bool write_frame(bool wifi, uint8_t type, uint32_t seq, const void *data,
     return done == n;
 }
 static void status(bool wifi) {
-    char json[768], ip[32];
+    char json[1024], ip[32];
     voice_ip(ip, sizeof(ip));
     int n = snprintf(json, sizeof(json),
                      "{\"ack\":%lu,\"result\":\"%s\",\"mic\":%s,\"audio\":%s,\"bridge\":%s,"
                      "\"recording\":%s,\"session\":%lu,\"transport\":\"%s\",\"ip\":\"%s\",\"error\":%d,\"drops\":%lu,"
                      "\"modifiers\":%u,\"key\":%u,\"rate\":16000,\"channels\":1,\"bits\":16,"
-                     "\"power_profile\":\"idle-v2\",\"battery_pct\":%d,\"battery_mv\":%d,"
+                     "\"power_profile\":\"idle-v3\",\"battery_pct\":%d,\"battery_mv\":%d,"
                      "\"uptime_s\":%lu,\"screen_off\":%s,\"codec_asleep\":%s,\"wifi_idle\":%s,"
-                     "\"usb_host\":%s,\"deep_wakes\":%lu,\"sleep_error\":%d}",
+                     "\"usb_host\":%s,\"deep_wakes\":%lu,\"sleep_error\":%d,"
+                     "\"wifi_start_ms\":%lu,\"wifi_associated_ms\":%lu,\"wifi_ip_ms\":%lu,\"wifi_ready_ms\":%lu}",
                      (unsigned long)ack_sequence, result, voice_mic ? "true" : "false",
                      voice_audio ? "true" : "false", voice_bridge_ready() ? "true" : "false",
                      voice_recording ? "true" : "false", (unsigned long)voice_session,
@@ -260,7 +281,9 @@ static void status(bool wifi) {
                      voice_screen_off ? "true" : "false", voice_codec_asleep ? "true" : "false",
                      voice_wifi_idle ? "true" : "false",
                      usb_serial_jtag_is_connected() ? "true" : "false",
-                     (unsigned long)voice_deep_wakes, voice_sleep_error);
+                     (unsigned long)voice_deep_wakes, voice_sleep_error,
+                     (unsigned long)wifi_start_ms, (unsigned long)wifi_associated_ms,
+                     (unsigned long)wifi_ip_ms, (unsigned long)wifi_ready_ms);
     if (n > 0 && n < (int)sizeof(json)) {
         if (write_frame(wifi, VP_STATUS, 0, json, (size_t)n))
             last_status_sent = esp_timer_get_time();
@@ -359,9 +382,11 @@ static void command(uint8_t type, uint32_t sequence, const uint8_t *data, size_t
         cJSON *active = cJSON_GetObjectItemCaseSensitive(obj, "active");
         if (cJSON_IsBool(active)) {
             uint32_t now = cJSON_IsTrue(active) ? (uint32_t)(esp_timer_get_time() / 1000) : 0;
-            if (wifi)
+            if (wifi) {
                 ready_wifi = now;
-            else
+                if (now && !wifi_ready_ms)
+                    wifi_ready_ms = now;
+            } else
                 ready_usb = now;
             snprintf(result, sizeof(result), "ok");
         }
@@ -411,6 +436,8 @@ static void command(uint8_t type, uint32_t sequence, const uint8_t *data, size_t
                 config_changed = strcmp(config.ssid, next.ssid) ||
                                  strcmp(config.password, next.password) ||
                                  strcmp(config.token, next.token);
+                if (config_changed)
+                    last_wifi_channel = 0;
                 config = next;
                 shortcut_mod = config.modifiers;
                 shortcut_key = config.key;
@@ -442,16 +469,20 @@ void voice_runtime_resume(void) {
         xTaskNotifyGive(transport_worker);
     if (audio_worker)
         xTaskNotifyGive(audio_worker);
+    if (battery_worker)
+        xTaskNotifyGive(battery_worker);
 }
 esp_err_t voice_runtime_pause(void) {
-    if (!transport_worker || !audio_worker || voice_mic || voice_audio)
+    if (!transport_worker || !audio_worker || !battery_worker || voice_mic || voice_audio)
         return ESP_ERR_INVALID_STATE;
     transport_sleep_error = ESP_OK;
     sleep_requested = true;
+    xTaskNotifyGive(battery_worker);
     int64_t deadline = esp_timer_get_time() + 1500000;
-    while ((!transport_paused || !audio_paused) && esp_timer_get_time() < deadline)
+    while ((!transport_paused || !audio_paused || !battery_paused) && esp_timer_get_time() < deadline)
         vTaskDelay(pdMS_TO_TICKS(10));
-    esp_err_t err = !transport_paused || !audio_paused ? ESP_ERR_TIMEOUT : transport_sleep_error;
+    bool paused = transport_paused && audio_paused && battery_paused;
+    esp_err_t err = paused ? transport_sleep_error : ESP_ERR_TIMEOUT;
     if (err == ESP_OK && (voice_mic || voice_audio || !voice_codec_asleep))
         err = ESP_ERR_INVALID_STATE;
     if (err != ESP_OK)
@@ -513,7 +544,8 @@ static void transport_task(void *arg) {
             if (client >= 0 && authenticated)
                 status(true);
         }
-        vTaskDelay(pdMS_TO_TICKS(voice_mic ? 2 : voice_wifi_idle ? 100 : 20));
+        unsigned interval = voice_mic ? 2 : (voice_screen_off || voice_wifi_idle ? 100 : 20);
+        vTaskDelay(pdMS_TO_TICKS(interval));
     }
 }
 static void audio_task(void *arg) {
@@ -582,7 +614,33 @@ static void audio_task(void *arg) {
         }
     }
 }
+static void battery_task(void *arg) {
+    (void)arg;
+    bool initialized = false;
+    int64_t initialized_at = 0;
+    for (;;) {
+        if (sleep_requested) {
+            pause_for_sleep(&battery_paused);
+            continue;
+        }
+        if (!initialized) {
+            initialized = bsp_battery_init() == ESP_OK;
+            initialized_at = esp_timer_get_time();
+        }
+        int64_t elapsed = esp_timer_get_time() - initialized_at;
+        int soc = initialized ? bsp_battery_soc() : -1;
+        int mv = initialized ? bsp_battery_mv() : -1;
+        voice_battery_percent = voice_battery_soc_value(soc, elapsed);
+        voice_battery_mv = mv > 0 ? mv : -1;
+        /* Never block networking or buttons on the fuel gauge. Notify wakes
+           this task before deep sleep so it cannot access a closed I2C bus. */
+        unsigned interval = initialized && elapsed < INT64_C(60000000) ? 1000 : 30000;
+        (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(interval));
+    }
+}
 esp_err_t voice_runtime_init(void) {
+    if (esp_reset_reason() != ESP_RST_DEEPSLEEP)
+        last_wifi_channel = 0;
     storage_available = nvs_open("voice_v1", NVS_READWRITE, &nvs) == ESP_OK;
     if (storage_available) {
         configuration_t saved = {0};
@@ -644,6 +702,8 @@ esp_err_t voice_runtime_init(void) {
     if (xTaskCreate(transport_task, "voice_link", 6144, NULL, 3, &transport_worker) != pdPASS)
         return ESP_ERR_NO_MEM;
     if (xTaskCreate(audio_task, "voice_audio", 4096, NULL, 3, &audio_worker) != pdPASS)
+        return ESP_ERR_NO_MEM;
+    if (xTaskCreate(battery_task, "voice_battery", 3072, NULL, 2, &battery_worker) != pdPASS)
         return ESP_ERR_NO_MEM;
     return ESP_OK;
 }

@@ -67,15 +67,31 @@ int main(void) {
     assert(!voice_should_blank(30000000, 0, false, true, true));
     assert(!voice_should_blank(30000000, 0, false, false, false));
     assert(!voice_should_blank(0, 1, false, false, true));
-    assert(!voice_should_idle_wifi(59999999, 0, false, false, true));
-    assert(voice_should_idle_wifi(60000000, 0, false, false, true));
-    assert(!voice_should_idle_wifi(60000000, 1, false, false, true));
-    assert(!voice_should_idle_wifi(60000000, 0, true, false, true));
-    assert(!voice_should_idle_wifi(60000000, 0, false, true, true));
-    assert(!voice_should_idle_wifi(60000000, 0, false, false, false));
+    /* Stay online beyond the old one-minute limit, until 15 idle minutes. */
+    assert(!voice_should_idle_wifi(60000000, 0, false, false, true));
+    assert(!voice_should_idle_wifi(899999999, 0, false, false, true));
+    assert(voice_should_idle_wifi(900000000, 0, false, false, true));
+    assert(!voice_should_idle_wifi(900000000, 1, false, false, true));
+    assert(!voice_should_idle_wifi(900000000, 0, true, false, true));
+    assert(!voice_should_idle_wifi(900000000, 0, false, true, true));
+    assert(!voice_should_idle_wifi(900000000, 0, false, false, false));
     assert(!voice_should_idle_wifi(0, 1, false, false, true));
     /* An input wake starts another full idle interval. */
-    assert(!voice_should_idle_wifi(60000001, 60000000, false, false, true));
+    assert(!voice_should_idle_wifi(900000001, 900000000, false, false, true));
+    assert(!voice_should_idle_wifi(1799999999, 900000000, false, false, true));
+    assert(voice_should_idle_wifi(1800000000, 900000000, false, false, true));
+    /* A restart zero remains unknown only during the settling window. */
+    assert(voice_battery_soc_value(0, 0) == -1);
+    assert(voice_battery_soc_value(0, 59999999) == -1);
+    assert(voice_battery_soc_value(0, 60000000) == 0);
+    assert(voice_battery_soc_value(0, 120000000) == 0);
+    assert(voice_battery_soc_value(1, 1000000) == 1);
+    assert(voice_battery_soc_value(75, 1000000) == 75);
+    assert(voice_battery_soc_value(100, 1000000) == 100);
+    assert(voice_battery_soc_value(-1, 120000000) == -1);
+    assert(voice_battery_soc_value(101, 120000000) == -1);
+    assert(voice_battery_soc_value(255, 0) == -1);
+    assert(voice_battery_soc_value(75, -1) == -1);
     uint8_t discovery_request[] = "PASSPORT_VOICE_DISCOVER_V1 0123456789abcdef0123456789abcdef";
     const char discovery_expected[] = "PASSPORT_VOICE_V1 0123456789abcdef0123456789abcdef";
     uint8_t discovery_response[80];
@@ -88,5 +104,5 @@ int main(void) {
     assert(!vp_discovery_reply(discovery_request, sizeof(discovery_request) - 1, discovery_response, 80));
     discovery_request[0] = '!';
     assert(!vp_discovery_reply(discovery_request, sizeof(discovery_request) - 1, discovery_response, 80));
-    puts("Voice protocol, discovery and idle tests: PASS");
+    puts("Voice protocol, discovery, idle and battery tests: PASS");
 }
