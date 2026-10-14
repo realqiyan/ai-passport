@@ -1,0 +1,52 @@
+{
+  "date": "2026-10-14",
+  "source": "historical pipx installation review (2026-10-05)",
+  "archive": ".evidence/pipx-review-20261005.tar.gz",
+  "archive_sha256": "ca1297885efd60eb49f3fdfdfebb134c431285a8d4b8624d5e4786cc528f4c80",
+  "file_count": 30,
+  "files": {
+    "check_install.py": "a97dd17a92ff705a0e8e9c75e51bea402abdee7f985797281ff8f8e3ef5ac832",
+    "install-tests.log": "26f1b29a0494187e6a9ddf361ac3850dc8d40df81cfdbbc226db7a3ca9f958f5",
+    "bridge-tests.log": "eb604c40dc16833e839175b1733fd9754d50ef79eb0e043aa679906c4060ed2a",
+    "copied source with spaces/voice/bridge/pyproject.toml": "66e3f15c6414236271d07559514de7e8f857ce3d50222f07c6ecd509f008b9e9",
+    "copied source with spaces/voice/bridge/tests/test_bridge.py": "62a4293b4417e42a514b72144b86cddff04e00c485c575ef58dac3d3cdc578a2",
+    "copied source with spaces/voice/bridge/tests/test_discovery.py": "863b5927f7bf4bbc7130ccb900fbdf094b5a434849f218bc7ab21ae727919624",
+    "copied source with spaces/voice/bridge/tests/test_hostaudio.py": "e9ff090c6fda80de25b223a845baaac3a0d67b2d349017f1e376ce00bf540d9f",
+    "copied source with spaces/voice/bridge/tests/test_launch.py": "c48516e17116023501ba95a1898515ddf9bd5bd632b715b4878b2957d92e4dcd",
+    "copied source with spaces/voice/bridge/tests/test_lifecycle.py": "979f0b89601f9279ba4329e1f9de5c0ceb95b9b3fd9acb4911a69c6a0d3e00e7",
+    "copied source with spaces/voice/bridge/tests/test_microphone.py": "7831dbe65a80fd85e829c2bcded321b2ee40d3fbb661e05d76e7b0f0a24d6c6d",
+    "copied source with spaces/voice/bridge/tests/test_power.py": "1f40b6911562a0b0a8be77404358748419f636813cc94bae5fa85fb93aee6c93",
+    "copied source with spaces/voice/bridge/tests/test_session.py": "91f5e4633575a8f7be2cc84ef89358b592db1d9ec8f72496edf5b8978d30b8cf",
+    "copied source with spaces/voice/bridge/tests/test_shortcut.py": "49eafd0e4cee0ce37e2834762895f41eea38f139b6491daf9a9ec034f0f9e5ca",
+    "copied source with spaces/voice/bridge/tests/test_temporary.py": "d1fe8993b396c3e733b9257e759b4dc0b9ccb960660fc7588cb8d253c50b4d08",
+    "copied source with spaces/voice/bridge/voice_bridge/__init__.py": "f427b1495adb52d96c3b5f28b43f4638c7a65a53bf50c52ed67c6898d8753ccc",
+    "copied source with spaces/voice/bridge/voice_bridge/audio.py": "3ec4e99e237d82376b0e69083019604d9cd2fcf33c18fc83ee504adbcd63cc86",
+    "copied source with spaces/voice/bridge/voice_bridge/cli.py": "3094497536444d53f46b42fec20fea7855d6f01285f5e35701e726b08a8ceb7c",
+    "copied source with spaces/voice/bridge/voice_bridge/discovery.py": "617b5ec8edde52b5c5d1e85b7282a2fc95d29c610c0e5beab85022f946eb1799",
+    "copied source with spaces/voice/bridge/voice_bridge/hostaudio.py": "c92cffe131cab5dae56dfeea0a8a2fe2da774d13ced2b8bd7770c1512889ca85",
+    "copied source with spaces/voice/bridge/voice_bridge/lifecycle.py": "630812890aa19ec0917dad760994824d7586b3233b7c4430090495b2e10a72fc",
+    "copied source with spaces/voice/bridge/voice_bridge/microphone.py": "9fe9222d0102b88e69eeee847b753b752997a4617c58b20ea1279f689ca68ec8",
+    "copied source with spaces/voice/bridge/voice_bridge/protocol.py": "77da61b21970cffb1e0180e2a6d865e1bab427e70f7b218abb1d853220159fd1",
+    "copied source with spaces/voice/bridge/voice_bridge/shortcut.py": "e42ed8bf2e2d4a4404e14f4d722bb0d14b8c863f28dc744bf840fbbcf4be48e2",
+    "copied source with spaces/voice/bridge/voice_bridge/state.py": "9f2c6de66115539917eb7067695783f67ad06726be62a79ad46a9ece5a43d73e",
+    "copied source with spaces/voice/bridge/voice_bridge/transport.py": "e9bd151cab4a1d78d5b8ace4f51e40aeea5f65467a2913786886d5c0b1d9bea1",
+    "copied source with spaces/voice/bridge-command.sh": "5c6f9af2656d29ce38f2330e70870599515febd4575b60388dacc4981ddc123b",
+    "copied source with spaces/voice/configure.sh": "c59ec0d844cfb21ab7297bef56ebca91f14756a9fcba4421dd1b56c177e94bc2",
+    "copied source with spaces/voice/install.sh": "3bc7449ab71ac401aa3f96f8d9dd2905287db84a8bae1f43b051db73897e15f6",
+    "copied source with spaces/voice/start.sh": "d734bd1faed50d6aa7272913376da69050d0b8b8517481747e64eff6ce06421a",
+    "copied source with spaces/voice/uninstall.sh": "d44605b49b7f36657712f201f5bb93432ba18c156496fc45ec170478d980cda5"
+  },
+  "sanitization": {
+    "changed_members": [
+      "install-tests.log",
+      "bridge-tests.log"
+    ],
+    "replacements": [
+      "personal workspace prefix -> <WORKSPACE>",
+      "personal Python interpreter path -> <PYTHON>"
+    ],
+    "archive_metadata": "normalized uid/gid, cleared owner names, zeroed timestamps and gzip filename",
+    "original_archive_sha256": "45da1a1fc1fb9fdb9fa912dc6e4e4c19634bec1a0bd796f0f75ceebb7938c85c"
+  },
+  "verification": "all 30 members retained; 28 unchanged member payloads match the original manifest; two logs have path-only redactions; no archived programs executed"
+}

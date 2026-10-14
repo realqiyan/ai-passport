@@ -1,6 +1,30 @@
+# Local tools and build worktree
 /.tools/
 /.font-tools/
-/source/
 /build/
 /voice-source/
-/.evidence/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.DS_Store
+
+# Runtime state and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+**/.local/
+**/token
+**/host
+*.log
+
+# Only audited historical evidence is versioned
+/.evidence/*
+!/.evidence/pipx-review-20261005.tar.gz
+!/.evidence/pipx-review-evidence.json

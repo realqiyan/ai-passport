@@ -1,8 +1,19 @@
 # AI Passport：语音输入
 
-状态日期：2026-10-11。
+应用状态日期：2026-10-11；独立仓库迁移日期：2026-10-14。
 
 目标：用设备麦克风和三个按键，在 Mac 上完成语音输入、编辑和回车。
+
+## 获取完整项目
+
+```bash
+git clone --recurse-submodules https://github.com/realqiyan/ai-passport.git
+cd ai-passport
+```
+
+已有克隆运行 `git submodule update --init source`。后续命令均从本仓库根目录执行，不依赖原工作区。`source/` 固定在官方基线 `33d3d1d93a1125b356b47b6d83a7a60121be801e`。Mac 安装见[语音应用](voice/README.md#mac-安装与更新)，构建见[开发手册](DEVELOPMENT.md)。
+
+迁移保留 36 条项目提交、官方源码子模块和脱敏后的历史证据；范围、检查与旧 Mac 安装迁移见[迁移说明](MIGRATION.md)。
 
 ## 当前状态
 
@@ -25,10 +36,10 @@
 | [硬件选型](voice/HARDWARE.md) | 自组设备候选，型号尚未确认 |
 | [历史验证证据](evidence.md) | pipx 安装检查的最小证据与哈希清单 |
 | `voice/firmware/`、`voice/bridge/` | 维护源码和测试 |
-| `source/` | 官方 BSP 参考；Mac 构建时承载共享 Git 数据 |
+| `source/` | 固定版本的官方源码子模块，含 BSP、许可和上游文档；Mac 构建时承载共享 Git 数据 |
 | `voice-source/`、`.tools/` | Mac 本地构建工作树与工具链，不纳入根仓库 |
 
-Mac 缺少构建目录时，按[恢复固件源码](DEVELOPMENT.md#恢复固件源码)处理。本地清理结果见[工作区维护说明](../workspace-reorganization/README.md)。
+Mac 缺少构建目录时，按[恢复固件源码](DEVELOPMENT.md#恢复固件源码)处理。本地文件保留边界见[迁移说明](MIGRATION.md)。
 
 ## 下一步
 

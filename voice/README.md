@@ -22,13 +22,13 @@ Linux 只维护源码和执行不依赖设备的测试。安装、构建、桥�
 
 ## Mac 安装与更新
 
-先准备 Python 3.10 或更新版本、pipx 和 BlackHole 2ch。从工作区根运行：
+先准备 Python 3.10 或更新版本、pipx 和 BlackHole 2ch。从本仓库根目录运行：
 
 ```bash
 brew install pipx
 pipx ensurepath
 brew install --cask blackhole-2ch
-pipx install -e projects/ai-passport/voice/bridge
+pipx install -e ./voice/bridge
 passport-voice setup
 ```
 
@@ -42,7 +42,7 @@ passport-voice setup
 
 ```bash
 # 停止桥接后，更新同一源码目录的可编辑安装
-pipx install --force -e projects/ai-passport/voice/bridge
+pipx install --force -e ./voice/bridge
 passport-voice setup
 ```
 
