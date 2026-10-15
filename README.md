@@ -13,7 +13,7 @@ cd ai-passport
 
 已有克隆运行 `git submodule update --init source`。后续命令均从本仓库根目录执行，不依赖原工作区。`source/` 固定在官方基线 `33d3d1d93a1125b356b47b6d83a7a60121be801e`。Mac 安装见[语音应用](voice/README.md#mac-安装与更新)，构建见[开发手册](DEVELOPMENT.md)。
 
-迁移保留 36 条项目提交、官方源码子模块和脱敏后的历史证据；范围、检查与旧 Mac 安装迁移见[迁移说明](MIGRATION.md)。
+迁移保留 37 条项目提交、官方源码子模块和脱敏后的历史证据；范围、检查与旧 Mac 安装迁移见[迁移说明](MIGRATION.md)。
 
 ## 当前状态
 
