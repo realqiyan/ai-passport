@@ -70,6 +70,14 @@ STATUS_GROUPS = (
         ("channels", "声道"), ("bits", "位深"), ("modifiers", "快捷键修饰"),
         ("key", "键码"), ("ack", "应答编号"), ("result", "结果"))),
 )
+# The default log reports device changes, never snapshots. Run time, voltage
+# and screen state stay out of the terminal; --verbose shows the full status.
+TRANSITIONS = (
+    ("mic", "麦克风", "开启", "关闭"),
+    ("audio", "音频传输", "开始", "停止"),
+    ("bridge", "桥接就绪", "恢复", "丢失"),
+    ("transport", "传输", None, None),
+)
 UNITS = {"battery_pct": "%", "battery_mv": " mV", "uptime_s": " s",
          "rate": " Hz", "bits": " bit", "wifi_start_ms": " ms",
          "wifi_associated_ms": " ms", "wifi_ip_ms": " ms", "wifi_ready_ms": " ms"}
@@ -121,12 +129,30 @@ class StatusLogger:
         self.drops_reported = 0
         self.drops_at = None
 
+    def changes(self, status):
+        """List the changed fields that are worth a line without --verbose."""
+        changes = []
+        for key, label, on_text, off_text in TRANSITIONS:
+            if key not in status or key not in self.previous:
+                continue  # The first snapshot only sets the baseline.
+            value, before = status[key], self.previous[key]
+            if value == before:
+                continue
+            if on_text is None:
+                changes.append(f"{label}={display_value(value)}")
+            else:
+                changes.append(f"{label}={on_text if value else off_text}")
+        return changes
+
     def update(self, status):
         snapshot = {key: value for key, value in status.items() if key not in ("ack", "uptime_s")}
         if self.verbose:
             if snapshot != self.previous:
                 log(format_status(status))
         else:
+            changes = self.changes(status)
+            if changes:
+                log("状态变化 | " + " | ".join(changes) + "。")
             for key, label in (("error", "设备错误"), ("sleep_error", "休眠错误")):
                 value = status.get(key)
                 if isinstance(value, int) and value != self.previous.get(key, 0):

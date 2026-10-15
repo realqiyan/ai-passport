@@ -24,6 +24,55 @@ KEYS = {"space": 0x2c, "enter": 0x28, "escape": 0x29, "tab": 0x2b}
 KEYS.update({chr(ord("a") + i): 4 + i for i in range(26)})
 KEYS.update({f"f{i}": 0x39 + i for i in range(1, 13)})
 DEFAULT_TOKEN = state.directory() / "token"
+KEY_NAMES = {code: name for name, code in KEYS.items()}
+
+def describe_shortcut(modifiers, key):
+    """Name a reported shortcut, and keep raw codes a name cannot express."""
+    if not isinstance(modifiers, int) or not isinstance(key, int):
+        return f"修饰键={display_value(modifiers)}，键码={display_value(key)}"
+    names = [name for name, bit in MODIFIERS.items() if modifiers & bit]
+    if modifiers & ~sum(MODIFIERS.values()):
+        names.append(f"修饰键 0x{modifiers:02x}")
+    names.append(KEY_NAMES.get(key, f"键码 0x{key:02x}"))
+    return "+".join(names)
+
+
+def recording_start(session, modifiers, key, override):
+    """Name one recording start with the shortcut the bridge presses for it."""
+    return (f"录音开始：会话 {display_value(session)}；快捷键 {describe_shortcut(modifiers, key)}"
+            f"{'（--shortcut 覆盖）' if override else ''}。")
+
+
+def audio_counters(sink):
+    """Read the bridge-side counters that one recording summary subtracts."""
+    return (sink.buffer.drops, sink.buffer.underruns, sink.buffer.gaps)
+
+
+class RecordingStats:
+    """Collect what the bridge saw between one start event and its end event."""
+
+    def __init__(self, session, started, counters):
+        self.session = session
+        self.started = started
+        self.counters = counters
+        self.frames = 0
+        self.last_frame = None
+
+    def frame(self, now):
+        self.frames += 1
+        self.last_frame = now
+
+    def summary(self, ended, counters):
+        """Describe the recording, and never hide a session that carried no audio."""
+        parts = [f"会话 {display_value(self.session)}", f"时长={ended - self.started:.2f} s"]
+        if self.frames:
+            drops, underruns, gaps = (now - before for now, before in zip(counters, self.counters))
+            parts += [f"音频={self.frames * 20 / 1000:.2f} s（{self.frames} 帧）",
+                      f"末尾延迟={(ended - self.last_frame) * 1000:.0f} ms",
+                      f"丢帧={drops}", f"欠载={underruns}", f"缺口={gaps}"]
+        else:
+            parts.append("音频=无（未收到 PCM）")
+        return "录音结束：" + "；".join(parts) + "。"
 
 def shortcut(value):
     parts = value.lower().split("+")
@@ -253,6 +302,7 @@ def _run(args, *, on_connected=None):
     session = None
     switcher = None
     verbose = getattr(args, "verbose", False)
+    override = getattr(args, "shortcut", None)
     status_logger = StatusLogger(verbose)
     try:
         session = open_session(args)
@@ -289,6 +339,8 @@ def _run(args, *, on_connected=None):
         latest = None
         mic_active = False
         recording_session = None
+        recorder = None
+        abandoned = set()
         usb_checked_at = heartbeat
         while True:
             for frame in session.receive():
@@ -296,18 +348,28 @@ def _run(args, *, on_connected=None):
                 if frame.kind == PCM:
                     sink.set_active(True)
                     sink.buffer.push(frame.sequence, frame.payload)
+                    if recorder is not None:
+                        recorder.frame(received)
                 elif frame.kind == STATUS:
                     status = json.loads(frame.payload)
                     if status.get("event") in ("recording", "key"):
                         keyboard = status.get("event") == "key"
                         event_details = " | ".join(
                             f"{name}={display_value(value)}" for name, value in status.items())
+                        summary = None
                         if not keyboard and status.get("ending"):
-                            if recording_session != status.get("session"):
-                                if verbose:
-                                    log(f"忽略过期结束快捷键 | {event_details}")
+                            number = status.get("session")
+                            if recording_session != number:
+                                # A start event the bridge never saw, or one whose
+                                # shortcut failed, closes without a recording here.
+                                if number not in abandoned:
+                                    log(f"忽略过期结束快捷键 | {event_details}" if verbose else
+                                        f"忽略录音结束：事件会话={display_value(number)}；"
+                                        f"当前会话={display_value(recording_session)}。")
                                 continue
-                            recording_session = None
+                            if recorder is not None:
+                                summary = recorder.summary(received, audio_counters(sink))
+                            recording_session = recorder = None
                         try:
                             if not trusted():
                                 raise RuntimeError("macOS does not trust this process for Accessibility")
@@ -317,18 +379,22 @@ def _run(args, *, on_connected=None):
                                 mic_active = True
                             modifiers, key = status.get("modifiers"), status.get("key")
                             if not keyboard:
-                                modifiers, key = getattr(args, "shortcut", None) or (modifiers, key)
+                                modifiers, key = override or (modifiers, key)
                             injector.send(modifiers, key)
                             if not keyboard and not status.get("ending"):
                                 recording_session = status.get("session")
+                                recorder = RecordingStats(recording_session, received,
+                                                          audio_counters(sink))
                             label = "按键已发送" if keyboard else "快捷键已发送"
                             if verbose:
                                 log(f"{label} | {event_details} | 实际修饰键={modifiers} | 实际键码={key}")
                             elif not keyboard:
-                                log("录音结束。" if status.get("ending") else "录音开始。")
+                                log(summary if summary is not None
+                                    else recording_start(recording_session, modifiers, key, override))
                         except (RuntimeError, ValueError) as error:
                             log(f"Shortcut not sent: {error} | {event_details}", file=sys.stderr)
                             if not keyboard and not status.get("ending"):
+                                abandoned.add(status.get("session"))
                                 session.send("stop", session=status.get("session"))
                         continue
                     if (status.get("rate"), status.get("channels"), status.get("bits")) != (16000, 1, 16):

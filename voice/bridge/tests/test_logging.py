@@ -3,14 +3,16 @@ from datetime import datetime, timedelta, timezone
 import io
 import json
 from pathlib import Path
+import re
 import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from voice_bridge.cli import _run, idle_heartbeat, main, run
+from voice_bridge.audio import AudioBuffer
+from voice_bridge.cli import RecordingStats, _run, describe_shortcut, idle_heartbeat, main, run
 from voice_bridge.log import StatusLogger, format_status, log, timestamp, persistent_log
-from voice_bridge.protocol import STATUS
+from voice_bridge.protocol import PCM, STATUS
 
 
 STAMP = "2026-10-07 08:09:10.123+08:00"
@@ -27,6 +29,10 @@ STATUS_SAMPLE = {
 
 def frame(status):
     return SimpleNamespace(kind=STATUS, payload=json.dumps(status).encode())
+
+
+def pcm(sequence):
+    return SimpleNamespace(kind=PCM, sequence=sequence, payload=b"\x00" * 640)
 
 
 class LoggingTests(unittest.TestCase):
@@ -124,8 +130,11 @@ class LoggingTests(unittest.TestCase):
         self.assertEqual(summaries, [f"；等待=4.0 s；重试=2 次；等待开始={STAMP}",
                                     "；等待=3.0 s；重试=1 次；等待开始=2026-10-07 08:10:00.000+08:00"])
 
-    def capture_session(self, statuses, *, ready_error=None, shortcut=None, verbose=True):
-        session, sink, injector = Mock(), Mock(), Mock()
+    def capture_session(self, statuses, *, ready_error=None, shortcut=None, verbose=True,
+                        injector=None):
+        session, sink = Mock(), Mock()
+        sink.buffer = AudioBuffer()  # Real counters, no audio hardware.
+        injector = injector or Mock()
         stdout, stderr = io.StringIO(), io.StringIO()
 
         def request(op, **fields):
@@ -136,7 +145,8 @@ class LoggingTests(unittest.TestCase):
             return {"transport": "wifi"}
 
         session.request.side_effect = request
-        session.receive.side_effect = [[frame(status)] for status in statuses] + [KeyboardInterrupt]
+        session.receive.side_effect = [[frame(status) if isinstance(status, dict) else status]
+                                       for status in statuses] + [KeyboardInterrupt]
         args = SimpleNamespace(serial=None, host="192.0.2.1", output="BlackHole 2ch",
                                mic_device="", shortcut=shortcut, verbose=verbose)
         expected_error = type(ready_error) if ready_error else KeyboardInterrupt
@@ -194,13 +204,91 @@ class LoggingTests(unittest.TestCase):
             self.assertEqual(len(stderr.splitlines()), 1)  # Connection established.
             self.assertEqual(len(path.read_text().splitlines()), 1)
 
-    def test_default_recording_is_concise_and_successful_keys_are_quiet(self):
+    def test_default_recording_reports_the_session_and_successful_keys_stay_quiet(self):
         start = {'event': 'recording', 'session': 7, 'ending': False, 'modifiers': 3, 'key': 25}
         end = {**start, 'ending': True}
         key = {'event': 'key', 'modifiers': 0, 'key': 40}
         stdout, _, injector = self.capture_session([start, key, end], verbose=False)
-        self.assertEqual(stdout, f'[{STAMP}] 录音开始。\n[{STAMP}] 录音结束。\n')
+        lines = stdout.splitlines()
+        self.assertEqual(lines[0], f'[{STAMP}] 录音开始：会话 7；快捷键 ctrl+shift+v。')
+        self.assertRegex(lines[1], rf'^\[{re.escape(STAMP)}\] 录音结束：会话 7；'
+                                   r'时长=0\.\d+ s；音频=无（未收到 PCM）。$')
+        self.assertEqual(len(lines), 2)
         self.assertEqual(injector.send.call_count, 3)
+
+    def test_recording_start_names_the_override_in_use(self):
+        start = {'event': 'recording', 'session': 7, 'ending': False, 'modifiers': 3, 'key': 25}
+        stdout, _, injector = self.capture_session([start, {**start, 'ending': True}],
+                                                   verbose=False, shortcut=(5, 44))
+        self.assertEqual(stdout.splitlines()[0],
+                         f'[{STAMP}] 录音开始：会话 7；快捷键 ctrl+alt+space（--shortcut 覆盖）。')
+        injector.send.assert_called_with(5, 44)
+
+    def test_recording_summary_reports_frames_and_bridge_counters(self):
+        stats = RecordingStats(7, 10.0, (0, 0, 0))
+        stats.frame(11.0)
+        stats.frame(11.5)
+        self.assertEqual(stats.summary(12.0, (2, 3, 4)),
+                         '录音结束：会话 7；时长=2.00 s；音频=0.04 s（2 帧）；'
+                         '末尾延迟=500 ms；丢帧=2；欠载=3；缺口=4。')
+
+    def test_default_recording_counts_received_audio(self):
+        start = {'event': 'recording', 'session': 7, 'ending': False, 'modifiers': 3, 'key': 25}
+        stdout, _, _ = self.capture_session([start, pcm(1), pcm(2), pcm(3), {**start, 'ending': True}],
+                                            verbose=False)
+        self.assertRegex(stdout.splitlines()[1], rf'^\[{re.escape(STAMP)}\] 录音结束：会话 7；'
+                                                  r'时长=0\.\d+ s；音频=0\.06 s（3 帧）；'
+                                                  r'末尾延迟=\d+ ms；丢帧=0；欠载=0；缺口=0。$')
+
+    def test_expired_recording_end_is_reported_without_a_press(self):
+        start = {'event': 'recording', 'session': 7, 'ending': False, 'modifiers': 3, 'key': 25}
+        stale = {**start, 'session': 8, 'ending': True}
+        stdout, _, injector = self.capture_session([start, stale], verbose=False)
+        self.assertEqual(stdout.splitlines()[1], f'[{STAMP}] 忽略录音结束：事件会话=8；当前会话=7。')
+        self.assertEqual(injector.send.call_count, 1)
+
+    def test_verbose_expired_recording_end_keeps_the_event_fields(self):
+        start = {'event': 'recording', 'session': 7, 'ending': False, 'modifiers': 3, 'key': 25}
+        stale = {**start, 'session': 8, 'ending': True}
+        stdout, _, _ = self.capture_session([start, stale], verbose=True)
+        self.assertIn('忽略过期结束快捷键 | event=recording | session=8 | ending=是', stdout)
+
+    def test_a_start_that_could_not_be_injected_explains_its_ending_event(self):
+        injector = Mock()
+        injector.send.side_effect = RuntimeError('macOS does not trust this process')
+        start = {'event': 'recording', 'session': 7, 'ending': False, 'modifiers': 3, 'key': 25}
+        stdout, stderr, _ = self.capture_session([start, {**start, 'ending': True}],
+                                                 verbose=False, injector=injector)
+        self.assertEqual(stdout, '')
+        self.assertIn('Shortcut not sent: macOS does not trust this process', stderr)
+        self.assertNotIn('忽略录音结束', stderr)
+
+    def test_shortcut_names_keep_codes_that_have_no_name(self):
+        self.assertEqual(describe_shortcut(3, 25), 'ctrl+shift+v')
+        self.assertEqual(describe_shortcut(1, 0x2c), 'ctrl+space')
+        self.assertEqual(describe_shortcut(16, 0x52), '修饰键 0x10+键码 0x52')
+        self.assertEqual(describe_shortcut(None, 25), '修饰键=未知（null），键码=25')
+
+    def test_default_state_changes_are_reported_once(self):
+        reporter = StatusLogger()
+        with patch('voice_bridge.log.log') as output:
+            for status in ({'mic': False, 'audio': False, 'bridge': True, 'transport': 'wifi'},
+                           {'mic': False, 'audio': False, 'bridge': True, 'transport': 'wifi'},
+                           {'mic': True, 'audio': False, 'bridge': True, 'transport': 'wifi'},
+                           {'mic': True, 'audio': True, 'bridge': True, 'transport': 'wifi'},
+                           {'mic': False, 'audio': False, 'bridge': False, 'transport': 'usb'}):
+                reporter.update(status)
+        self.assertEqual([call.args[0] for call in output.call_args_list],
+                         ['状态变化 | 麦克风=开启。',
+                          '状态变化 | 音频传输=开始。',
+                          '状态变化 | 麦克风=关闭 | 音频传输=停止 | 桥接就绪=丢失 | 传输=usb。'])
+
+    def test_default_state_changes_keep_voltage_screen_and_unknown_fields_quiet(self):
+        reporter = StatusLogger()
+        with patch('voice_bridge.log.log') as output:
+            reporter.update({'battery_mv': 3900, 'screen_off': False, 'new_sensor': 1})
+            reporter.update({'battery_mv': 3890, 'screen_off': True, 'new_sensor': 2})
+        output.assert_not_called()
 
     def test_default_errors_and_recovery_are_not_hidden_or_repeated(self):
         reporter = StatusLogger()
