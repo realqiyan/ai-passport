@@ -68,6 +68,11 @@ static void show_message(const char *text) {
     message = text;
     message_until = esp_timer_get_time() + 3000000;
 }
+/* Click, double click and long press conclude one press. Hold and release
+   events before them belong to the same press and never act. */
+static bool press_concluded(bsp_btn_ev_t event) {
+    return event == BSP_BTN_CLICK || event == BSP_BTN_DOUBLE || event == BSP_BTN_LONG;
+}
 void app_main(void) {
     /* USB is a framed binary link. Keep ESP logs out of its byte stream. */
     esp_log_level_set("*", ESP_LOG_NONE);
@@ -105,7 +110,7 @@ void app_main(void) {
         message = "Buttons unavailable";
     int64_t last_input = esp_timer_get_time();
     bool screen_off = false;
-    bool wake_only = false;
+    bool wake_pending = false;
     bool sleep_attempted = false;
     for (;;) {
         input_t input;
@@ -116,13 +121,13 @@ void app_main(void) {
         }
         if (received && voice_wifi_idle) {
             voice_wifi_idle = false;
-            wake_only = true;
+            wake_pending = true;
             show_message("Reconnecting; press UP when ready");
         }
-        if (received && wake_only) {
-            if (input.event == BSP_BTN_CLICK || input.event == BSP_BTN_DOUBLE || input.event == BSP_BTN_LONG)
-                wake_only = false;
-        } else if (received && err == ESP_OK) {
+        /* A press on a blanked screen only wakes it; the device acts on the
+           next press. The same rule applies to the Wi-Fi idle notice above. */
+        if (received && voice_button_event_acts(&wake_pending, screen_off,
+                                               press_concluded(input.event)) && err == ESP_OK) {
             const char *text = voice_controls_input(input.button, input.event, last_input);
             if (text)
                 show_message(text);

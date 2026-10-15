@@ -62,6 +62,18 @@ bool voice_should_idle_wifi(int64_t now_us, int64_t last_input_us,
            now_us - last_input_us >= INT64_C(300000000);
 }
 
+bool voice_button_event_acts(bool *waiting, bool screen_off, bool action_event) {
+    /* A blanked screen wakes on the press itself, before that press produces
+       its click or long press. Consume the whole press, then act on the next
+       one, so a wake tap cannot start a recording or delete text. */
+    if (screen_off)
+        *waiting = true;
+    if (!*waiting)
+        return true;
+    *waiting = !action_event;
+    return false;
+}
+
 int voice_battery_soc_value(int soc, int64_t elapsed_us) {
     if (soc < 0 || soc > 100 || elapsed_us < 0)
         return -1;

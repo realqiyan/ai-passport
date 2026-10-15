@@ -10,4 +10,5 @@ bool voice_should_blank(int64_t now_us, int64_t last_input_us,
                         bool mic, bool audio, bool buttons_ok);
 bool voice_should_idle_wifi(int64_t now_us, int64_t last_input_us,
                             bool mic, bool audio, bool buttons_ok);
+bool voice_button_event_acts(bool *waiting, bool screen_off, bool action_event);
 int voice_battery_soc_value(int soc, int64_t elapsed_us);
