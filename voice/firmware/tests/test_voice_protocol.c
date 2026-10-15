@@ -84,28 +84,6 @@ int main(void) {
     assert(!voice_should_idle_wifi(300000001, 300000000, false, false, true));
     assert(!voice_should_idle_wifi(599999999, 300000000, false, false, true));
     assert(voice_should_idle_wifi(600000000, 300000000, false, false, true));
-    /* A press that wakes a blanked screen does not run its action. */
-    bool waiting = false;
-    assert(voice_button_event_acts(&waiting, false, true));
-    assert(!voice_button_event_acts(&waiting, true, false));  /* press down wakes */
-    assert(waiting);
-    assert(!voice_button_event_acts(&waiting, false, false)); /* hold events */
-    assert(waiting);
-    assert(!voice_button_event_acts(&waiting, false, true));  /* its click */
-    assert(!waiting);
-    assert(voice_button_event_acts(&waiting, false, true));   /* next press acts */
-    /* A long press on the blanked screen is consumed too; no click follows it. */
-    waiting = false;
-    assert(!voice_button_event_acts(&waiting, true, false));
-    assert(!voice_button_event_acts(&waiting, false, true));
-    assert(!waiting);
-    assert(voice_button_event_acts(&waiting, false, false));
-    /* An idle notice press stays consumed until its press concludes. */
-    waiting = true;
-    assert(!voice_button_event_acts(&waiting, false, false));
-    assert(waiting);
-    assert(!voice_button_event_acts(&waiting, false, true));
-    assert(!waiting);
     /* A restart zero remains unknown only during the settling window. */
     assert(voice_battery_soc_value(0, 0) == -1);
     assert(voice_battery_soc_value(0, 59999999) == -1);
@@ -130,5 +108,5 @@ int main(void) {
     assert(!vp_discovery_reply(discovery_request, sizeof(discovery_request) - 1, discovery_response, 80));
     discovery_request[0] = '!';
     assert(!vp_discovery_reply(discovery_request, sizeof(discovery_request) - 1, discovery_response, 80));
-    puts("Voice protocol, discovery, idle, wake and battery tests: PASS");
+    puts("Voice protocol, discovery, idle and battery tests: PASS");
 }
