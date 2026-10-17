@@ -79,26 +79,26 @@ int main(void) {
     assert(voice_ip_cache_stale(5001, 1, false));
     assert(!voice_ip_cache_stale(9999, 1, true));
     assert(!voice_ip_cache_stale(5, 0xfffffff0u, false));
-    assert(!voice_should_blank(29999999, 0, false, false, true));
-    assert(voice_should_blank(30000000, 0, false, false, true));
-    assert(!voice_should_blank(30000000, 1, false, false, true));
-    assert(!voice_should_blank(30000000, 0, true, false, true));
-    assert(!voice_should_blank(30000000, 0, false, true, true));
-    assert(!voice_should_blank(30000000, 0, false, false, false));
+    assert(!voice_should_blank(14999999, 0, false, false, true));
+    assert(voice_should_blank(15000000, 0, false, false, true));
+    assert(!voice_should_blank(15000000, 1, false, false, true));
+    assert(!voice_should_blank(15000000, 0, true, false, true));
+    assert(!voice_should_blank(15000000, 0, false, true, true));
+    assert(!voice_should_blank(15000000, 0, false, false, false));
     assert(!voice_should_blank(0, 1, false, false, true));
-    /* Stay online beyond the blank delay, until 3 idle minutes. */
-    assert(!voice_should_idle_wifi(60000000, 0, false, false, true));
-    assert(!voice_should_idle_wifi(179999999, 0, false, false, true));
-    assert(voice_should_idle_wifi(180000000, 0, false, false, true));
-    assert(!voice_should_idle_wifi(180000000, 1, false, false, true));
-    assert(!voice_should_idle_wifi(180000000, 0, true, false, true));
-    assert(!voice_should_idle_wifi(180000000, 0, false, true, true));
-    assert(!voice_should_idle_wifi(180000000, 0, false, false, false));
+    /* Stay online beyond the blank delay, until one idle minute. */
+    assert(!voice_should_idle_wifi(15000000, 0, false, false, true));
+    assert(!voice_should_idle_wifi(59999999, 0, false, false, true));
+    assert(voice_should_idle_wifi(60000000, 0, false, false, true));
+    assert(!voice_should_idle_wifi(60000000, 1, false, false, true));
+    assert(!voice_should_idle_wifi(60000000, 0, true, false, true));
+    assert(!voice_should_idle_wifi(60000000, 0, false, true, true));
+    assert(!voice_should_idle_wifi(60000000, 0, false, false, false));
     assert(!voice_should_idle_wifi(0, 1, false, false, true));
     /* An input wake starts another full idle interval. */
-    assert(!voice_should_idle_wifi(180000001, 180000000, false, false, true));
-    assert(!voice_should_idle_wifi(359999999, 180000000, false, false, true));
-    assert(voice_should_idle_wifi(360000000, 180000000, false, false, true));
+    assert(!voice_should_idle_wifi(60000001, 60000000, false, false, true));
+    assert(!voice_should_idle_wifi(119999999, 60000000, false, false, true));
+    assert(voice_should_idle_wifi(120000000, 60000000, false, false, true));
     /* A restart zero remains unknown only during the settling window. */
     assert(voice_battery_soc_value(0, 0) == -1);
     assert(voice_battery_soc_value(0, 59999999) == -1);
