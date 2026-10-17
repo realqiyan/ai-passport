@@ -71,19 +71,19 @@ int main(void) {
     assert(!voice_should_blank(30000000, 0, false, true, true));
     assert(!voice_should_blank(30000000, 0, false, false, false));
     assert(!voice_should_blank(0, 1, false, false, true));
-    /* Stay online beyond the old one-minute limit, until 5 idle minutes. */
+    /* Stay online beyond the blank delay, until 3 idle minutes. */
     assert(!voice_should_idle_wifi(60000000, 0, false, false, true));
-    assert(!voice_should_idle_wifi(299999999, 0, false, false, true));
-    assert(voice_should_idle_wifi(300000000, 0, false, false, true));
-    assert(!voice_should_idle_wifi(300000000, 1, false, false, true));
-    assert(!voice_should_idle_wifi(300000000, 0, true, false, true));
-    assert(!voice_should_idle_wifi(300000000, 0, false, true, true));
-    assert(!voice_should_idle_wifi(300000000, 0, false, false, false));
+    assert(!voice_should_idle_wifi(179999999, 0, false, false, true));
+    assert(voice_should_idle_wifi(180000000, 0, false, false, true));
+    assert(!voice_should_idle_wifi(180000000, 1, false, false, true));
+    assert(!voice_should_idle_wifi(180000000, 0, true, false, true));
+    assert(!voice_should_idle_wifi(180000000, 0, false, true, true));
+    assert(!voice_should_idle_wifi(180000000, 0, false, false, false));
     assert(!voice_should_idle_wifi(0, 1, false, false, true));
     /* An input wake starts another full idle interval. */
-    assert(!voice_should_idle_wifi(300000001, 300000000, false, false, true));
-    assert(!voice_should_idle_wifi(599999999, 300000000, false, false, true));
-    assert(voice_should_idle_wifi(600000000, 300000000, false, false, true));
+    assert(!voice_should_idle_wifi(180000001, 180000000, false, false, true));
+    assert(!voice_should_idle_wifi(359999999, 180000000, false, false, true));
+    assert(voice_should_idle_wifi(360000000, 180000000, false, false, true));
     /* A restart zero remains unknown only during the settling window. */
     assert(voice_battery_soc_value(0, 0) == -1);
     assert(voice_battery_soc_value(0, 59999999) == -1);
