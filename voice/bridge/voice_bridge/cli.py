@@ -28,12 +28,16 @@ KEY_NAMES = {code: name for name, code in KEYS.items()}
 # Reconnect attempts start about this often. The attempt's own duration counts
 # toward the interval, so a slow failure does not add a full wait on top of it.
 RECONNECT_INTERVAL = 1.0
+# A reconnecting attempt fails fast: a device that answers at all answers in
+# well under this, and a short deadline bounds how long an announcement that
+# lands mid-attempt waits before the next try.
+RECONNECT_TIMEOUT = 0.4
 # A device that just announced itself may still be settling its Wi-Fi: for a
 # short window, retry its announced address often, with a short connect timeout,
 # so the first moment it answers is used instead of the next regular poll.
 ANNOUNCE_SETTLE_WINDOW = 6.0
-ANNOUNCE_SETTLE_INTERVAL = 0.3
-ANNOUNCE_SETTLE_TIMEOUT = 0.5
+ANNOUNCE_SETTLE_INTERVAL = 0.05
+ANNOUNCE_SETTLE_TIMEOUT = 0.2
 
 def describe_shortcut(modifiers, key):
     """Name a reported shortcut, and keep raw codes a name cannot express."""
@@ -174,7 +178,7 @@ def open_session(args):
             args.host = args.host_file.read_text().strip()
     link = SerialLink(args.serial) if args.serial else TcpLink(
         args.host, connect_timeout=ANNOUNCE_SETTLE_TIMEOUT if getattr(args, "_announce_settle", False)
-        else (1 if reconnecting else 3))
+        else (RECONNECT_TIMEOUT if reconnecting else 3))
     session = Session(link)
     try:
         session.request("hello", token=token, **({"timeout": 8} if args.serial else {}))
@@ -274,6 +278,21 @@ def run(args):
         listener = AnnounceListener() if (
             getattr(args, "auto", False) or getattr(args, "serial", None) is None) else None
         args._announce = listener
+
+        def use_announcement(now):
+            # A device that just announced itself may take a moment to answer.
+            # Its address is known, so skip discovery and poll it quickly
+            # instead of waiting for the regular interval. This is checked
+            # before an attempt too, so an announcement that lands between
+            # attempts moves the next one forward instead of waiting.
+            settle = bool(listener is not None and listener.host and
+                          now - listener.announced_at < ANNOUNCE_SETTLE_WINDOW)
+            args._announce_settle = settle
+            if settle:
+                args.host = listener.host
+                args.discover = False
+            return settle
+
         try:
             while True:
                 attempted_at = time.monotonic()
@@ -286,6 +305,7 @@ def run(args):
                                 read_token(args.token_file)
                             except (RuntimeError, ValueError, OSError) as error:
                                 raise ConnectionError(str(error)) from error
+                    use_announcement(attempted_at)
                     return _run(args, on_connected=connected)
                 except SwitchToUSB:
                     continue
@@ -307,15 +327,7 @@ def run(args):
                     if automatic and getattr(args, "host", None):
                         args.discover = failures % 2 == 0
                     now = time.monotonic()
-                    # A device that just announced itself may take a moment to
-                    # answer. Its address is known, so skip discovery and poll it
-                    # quickly instead of waiting for the regular interval.
-                    settle = bool(listener is not None and listener.host and
-                                  now - listener.announced_at < ANNOUNCE_SETTLE_WINDOW)
-                    args._announce_settle = settle
-                    if settle:
-                        args.host = listener.host
-                        args.discover = False
+                    settle = use_announcement(now)
                     # Keep attempt starts near one second apart without stretching
                     # the wait past the interval when an attempt itself was slow.
                     remaining = max(0.0, RECONNECT_INTERVAL - (now - attempted_at))
@@ -369,14 +381,17 @@ def _run(args, *, on_connected=None):
         if initial.get("transport") != expected:
             raise ConnectionError(f"Select {expected} on the device by holding OK; "
                                   "update firmware for automatic transport selection")
-        # Reconnect probes must not repeatedly open CoreAudio while the device sleeps.
-        sink = AudioSink(args.output)
-        switcher = InputSwitcher(args.mic_device) if args.mic_device else None
-        injector = Injector()
+        # Tell the device this session is active before opening CoreAudio: the
+        # device unlocks its keyboard at this point, and the sink is not needed
+        # until the next key press, so its setup no longer delays the handshake.
         session.request("ready", active=True)
         details = on_connected() if on_connected is not None else ""
         address = args.serial if args.serial else getattr(args, "host", "unknown")
         log(f"连接已建立：{expected} {address}{details}", file=sys.stderr)
+        # Reconnect probes must not repeatedly open CoreAudio while the device sleeps.
+        sink = AudioSink(args.output)
+        switcher = InputSwitcher(args.mic_device) if args.mic_device else None
+        injector = Injector()
         if not trusted():
             log("Warning: macOS does not trust this process for Accessibility, so the "
                   "device cannot send the shortcut.", file=sys.stderr)

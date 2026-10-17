@@ -162,7 +162,11 @@ class LoggingTests(unittest.TestCase):
             with self.assertRaises(expected_error):
                 _run(args)
         session.link.close.assert_called_once()
-        sink.close.assert_called_once()
+        if ready_error is None:
+            sink.close.assert_called_once()
+        else:
+            # A handshake that fails before ready must not touch CoreAudio at all.
+            sink.close.assert_not_called()
         return stdout.getvalue(), stderr.getvalue(), injector
 
     def test_connection_is_announced_only_after_ready(self):

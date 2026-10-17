@@ -82,6 +82,24 @@ class PowerTests(unittest.TestCase):
         session.send.assert_called_once_with('ready', active=False)
         session.link.close.assert_called_once()
 
+    def test_ready_reaches_the_device_before_audio_output_setup(self):
+        """CoreAudio setup must not delay the ready that unlocks the device keyboard."""
+        args = SimpleNamespace(output='BlackHole 2ch', mic_device='', serial=None)
+        session = Mock()
+        session.receive.side_effect = KeyboardInterrupt
+        order = []
+        def request(op, **fields):
+            order.append(op)
+            return {'transport': 'wifi'}
+        session.request.side_effect = request
+        sink = Mock()
+        with patch('voice_bridge.cli.open_session', return_value=session), \
+             patch('voice_bridge.audio.AudioSink', side_effect=lambda *a: (order.append('sink'), sink)[1]), \
+             patch('voice_bridge.cli.Injector'), patch('voice_bridge.cli.trusted', return_value=True):
+            with self.assertRaises(KeyboardInterrupt):
+                _run(args)
+        self.assertLess(order.index('ready'), order.index('sink'))
+
     def test_partial_connection_failure_closes_socket(self):
         channel = Mock()
         channel.setsockopt.side_effect = OSError('network down')

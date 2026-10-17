@@ -9,7 +9,8 @@ import unittest
 from unittest.mock import Mock, patch
 
 from voice_bridge import discovery
-from voice_bridge.cli import ANNOUNCE_SETTLE_TIMEOUT, configure, open_session
+from voice_bridge.cli import (ANNOUNCE_SETTLE_TIMEOUT, RECONNECT_TIMEOUT, configure,
+                              open_session)
 
 
 class DiscoveryTests(unittest.TestCase):
@@ -175,7 +176,7 @@ class DiscoverySessionTests(unittest.TestCase):
                 "voice_bridge.cli.TcpLink") as link, patch("voice_bridge.cli.Session") as session:
             open_session(self.args)
             find.assert_called_once_with(timeout=1, announced=None)
-            link.assert_called_once_with("192.0.2.2", connect_timeout=1)
+            link.assert_called_once_with("192.0.2.2", connect_timeout=RECONNECT_TIMEOUT)
             session.return_value.request.assert_called_once_with("hello", token="a" * 64)
             self.assertEqual(self.host_file.read_text(), "192.0.2.2\n")
 

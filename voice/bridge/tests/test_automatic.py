@@ -164,6 +164,33 @@ class AutomaticTests(unittest.TestCase):
         self.assertEqual(listener.event.wait.call_args.args[0], ANNOUNCE_SETTLE_INTERVAL)
         pause.assert_not_called()
 
+    def test_announcement_landing_before_an_attempt_moves_that_attempt_forward(self):
+        """An announcement landing while waiting must not wait for a failure first."""
+        args = SimpleNamespace(auto=False, serial=None, host='192.0.2.1', discover=True,
+                               token_file=Path('token'))
+        listener = Mock(host='192.0.2.9', announced_at=100.0)
+        with patch('voice_bridge.cli.time.monotonic', return_value=100.5), \
+                patch('voice_bridge.cli.AnnounceListener', return_value=listener), \
+                patch('voice_bridge.cli._run', return_value=0) as attempt:
+            self.assertEqual(run(args), 0)
+        attempt.assert_called_once()
+        self.assertEqual(args.host, '192.0.2.9')
+        self.assertFalse(args.discover)
+        self.assertTrue(args._announce_settle)
+
+    def test_stale_announcement_does_not_move_the_next_attempt(self):
+        """Only an announcement inside the settle window changes the next attempt."""
+        args = SimpleNamespace(auto=False, serial=None, host='192.0.2.1', discover=True,
+                               token_file=Path('token'))
+        listener = Mock(host='192.0.2.9', announced_at=0.0)
+        with patch('voice_bridge.cli.time.monotonic', return_value=100.0), \
+                patch('voice_bridge.cli.AnnounceListener', return_value=listener), \
+                patch('voice_bridge.cli._run', return_value=0):
+            self.assertEqual(run(args), 0)
+        self.assertEqual(args.host, '192.0.2.1')
+        self.assertTrue(args.discover)
+        self.assertFalse(args._announce_settle)
+
     def test_announced_new_boot_drops_a_session_tcp_still_calls_open(self):
         """A reboot can leave a dead session that only TCP retransmits notice."""
         session = Mock()
