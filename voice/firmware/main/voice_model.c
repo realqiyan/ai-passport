@@ -1,4 +1,5 @@
 #include "voice_model.h"
+#include <string.h>
 bool voice_shortcut_valid(int modifiers, int key) {
     return modifiers >= 0 && modifiers <= 15 &&
            ((key >= 4 && key <= 29) || key == 0x28 || key == 0x29 ||
@@ -48,6 +49,20 @@ bool voice_password_valid(const char *password) {
 
 bool voice_ready_fresh(uint32_t now_ms, uint32_t last_ms, bool idle) {
     return last_ms != 0 && (uint32_t)(now_ms - last_ms) < (idle ? 15000u : 3000u);
+}
+
+/* A cached lease is only trusted for the network it was learned on, and only
+   when both addresses are plausible. */
+bool voice_ip_cache_usable(bool marked, const char *cached_ssid, const char *ssid,
+                           uint32_t ip, uint32_t netmask) {
+    return marked && cached_ssid && ssid && cached_ssid[0] && !strcmp(cached_ssid, ssid) &&
+           ip != 0 && ip != UINT32_MAX && netmask != 0;
+}
+
+/* A cached address is a guess. When nothing has reached it within five
+   seconds, the router is asked for a lease instead. */
+bool voice_ip_cache_stale(uint32_t now_ms, uint32_t ip_ms, bool confirmed) {
+    return !confirmed && ip_ms != 0 && (uint32_t)(now_ms - ip_ms) >= 5000u;
 }
 
 bool voice_should_blank(int64_t now_us, int64_t last_input_us,

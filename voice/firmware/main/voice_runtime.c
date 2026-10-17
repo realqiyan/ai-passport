@@ -81,12 +81,69 @@ static int64_t last_status_sent;
 /* Only a scan-order hint. IDF searches other channels if this one misses.
    Keep it across deep sleep without writing flash or locking a BSSID. */
 static RTC_DATA_ATTR _Atomic uint32_t last_wifi_channel;
+/* The address the router leased last, kept in RTC memory: a wake off the same
+   network then skips the DHCP round trip, which costs about half a second and
+   sits right in front of the announce. Nothing is written to flash, and a wake
+   nobody reaches falls back to a fresh lease. */
+#define VOICE_IP_CACHE_MARK UINT32_C(0x49504331) /* "IPC1" */
+static RTC_DATA_ATTR uint32_t ip_cache_mark, ip_cache_ip, ip_cache_netmask, ip_cache_gateway;
+static RTC_DATA_ATTR char ip_cache_ssid[33];
+static bool ip_from_cache, ip_cache_confirmed;
+static esp_netif_t *sta_netif;
 static _Atomic uint32_t wifi_start_ms, wifi_associated_ms, wifi_ip_ms, wifi_ready_ms;
 /* A fresh address is announced a few times so a lost broadcast cannot hide it. */
 static uint32_t ip_broadcast;
 static uint8_t announce_left;
 static bool announce_wanted;
 static int64_t announce_due;
+/* The mark is written last so a reader never trusts a half-written cache. */
+static void ip_cache_store(const esp_netif_ip_info_t *info) {
+    if (!info->ip.addr || info->ip.addr == UINT32_MAX || !info->netmask.addr)
+        return;
+    memcpy(ip_cache_ssid, config.ssid, sizeof(ip_cache_ssid) - 1);
+    ip_cache_ssid[sizeof(ip_cache_ssid) - 1] = 0;
+    ip_cache_ip = info->ip.addr;
+    ip_cache_netmask = info->netmask.addr;
+    ip_cache_gateway = info->gw.addr;
+    ip_cache_mark = VOICE_IP_CACHE_MARK;
+}
+static void ip_cache_drop(void) {
+    ip_cache_mark = 0; /* the mark goes first, like in the store */
+    ip_cache_ip = ip_cache_netmask = ip_cache_gateway = 0;
+    ip_cache_ssid[0] = 0;
+}
+static bool ip_cache_ready(void) {
+    return voice_ip_cache_usable(ip_cache_mark == VOICE_IP_CACHE_MARK, ip_cache_ssid,
+                                 config.ssid, ip_cache_ip, ip_cache_netmask);
+}
+/* Assume the cached lease so the address is ready when the radio associates.
+   Stopping the client also drops the lease IDF keeps for its own restart, so a
+   fallback negotiates from scratch instead of asking for the old address. */
+static bool ip_cache_apply(void) {
+    esp_netif_ip_info_t info = {.ip.addr = ip_cache_ip,
+                                .netmask.addr = ip_cache_netmask,
+                                .gw.addr = ip_cache_gateway};
+    esp_err_t stopped = esp_netif_dhcpc_stop(sta_netif);
+    if (stopped != ESP_OK && stopped != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED)
+        return false;
+    if (esp_netif_set_ip_info(sta_netif, &info) == ESP_OK)
+        return true;
+    /* Keep the normal path alive when the static address is refused. */
+    (void)esp_netif_dhcpc_start(sta_netif);
+    return false;
+}
+/* Ask the router for a lease when the cached address went unanswered. */
+static void ip_cache_renew(void) {
+    ip_cache_drop();
+    ip_from_cache = false;
+    wifi_got_ip = false;
+    ip_address = 0;
+    announce_left = 0;
+    announce_wanted = false;
+    esp_err_t err = esp_netif_dhcpc_start(sta_netif);
+    if (err != ESP_OK)
+        voice_error = err;
+}
 bool voice_bridge_ready(void) {
     uint32_t last = voice_wifi_mode ? ready_wifi : ready_usb;
     uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
@@ -104,6 +161,19 @@ void voice_ip(char *out, unsigned size) {
         snprintf(out, size, "Not connected");
     else
         (void)inet_ntop(AF_INET, &addr, out, size);
+}
+/* Configure the station for one connection attempt. The channel hint only
+   orders the scan; IDF searches other channels if it misses. */
+static esp_err_t apply_sta_config(void) {
+    wifi_config_t sta = {0};
+    memcpy(sta.sta.ssid, config.ssid, strlen(config.ssid));
+    memcpy(sta.sta.password, config.password, strlen(config.password));
+    sta.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+    sta.sta.pmf_cfg.capable = true;
+    uint32_t channel = last_wifi_channel;
+    sta.sta.channel = channel <= 14 ? channel : 0;
+    sta.sta.scan_method = WIFI_FAST_SCAN;
+    return esp_wifi_set_config(WIFI_IF_STA, &sta);
 }
 static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data) {
     (void)arg;
@@ -132,6 +202,9 @@ static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
         announce_wanted = true;
         wifi_ip_ms = (uint32_t)(esp_timer_get_time() / 1000);
         wifi_got_ip = true;
+        /* Only a lease the router confirmed may be cached for the next wake. */
+        if (!ip_from_cache)
+            ip_cache_store(&event->ip_info);
     }
 }
 static void close_client(void) {
@@ -190,18 +263,14 @@ static void update_wifi(void) {
         config_changed = false;
     }
     if (wanted && !wifi_started) {
-        wifi_config_t sta = {0};
-        memcpy(sta.sta.ssid, config.ssid, strlen(config.ssid));
-        memcpy(sta.sta.password, config.password, strlen(config.password));
-        sta.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
-        sta.sta.pmf_cfg.capable = true;
-        uint32_t channel = last_wifi_channel;
-        sta.sta.channel = channel <= 14 ? channel : 0;
-        sta.sta.scan_method = WIFI_FAST_SCAN;
+        /* Assume the cached lease when the same network answers again: the
+           address is on the interface before the radio even associates. */
+        ip_from_cache = ip_cache_ready() && ip_cache_apply();
+        ip_cache_confirmed = false;
         wifi_start_ms = (uint32_t)(esp_timer_get_time() / 1000);
         wifi_associated_ms = wifi_ip_ms = wifi_ready_ms = 0;
         wifi_wanted = true;
-        esp_err_t err = esp_wifi_set_config(WIFI_IF_STA, &sta);
+        esp_err_t err = apply_sta_config();
         if (err == ESP_OK)
             err = esp_wifi_start();
         wifi_started = err == ESP_OK;
@@ -270,6 +339,12 @@ static void update_wifi(void) {
         announce_left--;
         announce_due = esp_timer_get_time() + 200000;
     }
+    /* A cached address is a guess. When nothing reached us shortly after it
+       came up, ask the router for a lease and announce the result. */
+    if (ip_from_cache &&
+        voice_ip_cache_stale((uint32_t)(esp_timer_get_time() / 1000), wifi_ip_ms,
+                             ip_cache_confirmed))
+        ip_cache_renew();
 }
 static void answer_discovery(void) {
     static int64_t last_reply;
@@ -317,6 +392,9 @@ static bool write_frame(bool wifi, uint8_t type, uint32_t seq, const void *data,
 static void status(bool wifi) {
     char json[1024], ip[32];
     voice_ip(ip, sizeof(ip));
+    /* Diagnostics that tell a cached wake from a negotiated one. */
+    wifi_ap_record_t ap = {0};
+    int authmode = esp_wifi_sta_get_ap_info(&ap) == ESP_OK ? (int)ap.authmode : -1;
     int n = snprintf(json, sizeof(json),
                      "{\"idle_heartbeat\":true,\"ack\":%lu,\"result\":\"%s\",\"mic\":%s,\"audio\":%s,\"bridge\":%s,"
                      "\"recording\":%s,\"session\":%lu,\"transport\":\"%s\",\"ip\":\"%s\",\"error\":%d,\"drops\":%lu,"
@@ -324,7 +402,8 @@ static void status(bool wifi) {
                      "\"auto_transport\":%s,\"power_profile\":\"idle-v3\",\"battery_pct\":%d,\"battery_mv\":%d,"
                      "\"uptime_s\":%lu,\"screen_off\":%s,\"codec_asleep\":%s,\"wifi_idle\":%s,"
                      "\"usb_host\":%s,\"deep_wakes\":%lu,\"sleep_error\":%d,"
-                     "\"wifi_start_ms\":%lu,\"wifi_associated_ms\":%lu,\"wifi_ip_ms\":%lu,\"wifi_ready_ms\":%lu}",
+                     "\"wifi_start_ms\":%lu,\"wifi_associated_ms\":%lu,\"wifi_ip_ms\":%lu,\"wifi_ready_ms\":%lu,"
+                     "\"wifi_cached_ip\":%s,\"wifi_authmode\":%d}",
                      (unsigned long)ack_sequence, result, voice_mic ? "true" : "false",
                      voice_audio ? "true" : "false", voice_bridge_ready() ? "true" : "false",
                      voice_recording ? "true" : "false", (unsigned long)voice_session,
@@ -337,7 +416,8 @@ static void status(bool wifi) {
                      usb_serial_jtag_is_connected() ? "true" : "false",
                      (unsigned long)voice_deep_wakes, voice_sleep_error,
                      (unsigned long)wifi_start_ms, (unsigned long)wifi_associated_ms,
-                     (unsigned long)wifi_ip_ms, (unsigned long)wifi_ready_ms);
+                     (unsigned long)wifi_ip_ms, (unsigned long)wifi_ready_ms,
+                     ip_from_cache ? "true" : "false", authmode);
     if (n > 0 && n < (int)sizeof(json)) {
         if (write_frame(wifi, VP_STATUS, 0, json, (size_t)n))
             last_status_sent = esp_timer_get_time();
@@ -508,8 +588,10 @@ static void command(uint8_t type, uint32_t sequence, const uint8_t *data, size_t
                 config_changed = strcmp(config.ssid, next.ssid) ||
                                  strcmp(config.password, next.password) ||
                                  strcmp(config.token, next.token);
-                if (config_changed)
+                if (config_changed) {
                     last_wifi_channel = 0;
+                    ip_cache_drop();
+                }
                 config = next;
                 shortcut_mod = config.modifiers;
                 shortcut_key = config.key;
@@ -585,6 +667,8 @@ static void transport_task(void *arg) {
                 accepted_at = esp_timer_get_time();
                 authenticated = false;
                 wifi_parser.used = 0;
+                /* Something reached the assumed address, so it is really ours. */
+                ip_cache_confirmed = true;
             }
         }
         if (client >= 0) {
@@ -716,8 +800,12 @@ static void battery_task(void *arg) {
     }
 }
 esp_err_t voice_runtime_init(void) {
-    if (esp_reset_reason() != ESP_RST_DEEPSLEEP)
+    if (esp_reset_reason() != ESP_RST_DEEPSLEEP) {
+        /* The radio and address hints describe the previous session. Only a
+           wake has a reason to keep them. */
         last_wifi_channel = 0;
+        ip_cache_drop();
+    }
     storage_available = nvs_open("voice_v1", NVS_READWRITE, &nvs) == ESP_OK;
     if (storage_available) {
         configuration_t saved = {0};
@@ -734,15 +822,8 @@ esp_err_t voice_runtime_init(void) {
     /* USB commands are always serviced. Start configured Wi-Fi so the Mac
        can connect without a manual mode selection, including on battery. */
     voice_wifi_mode = config.ssid[0] && config.token[0];
-    /* Set a known codec standby state even before the first recording. */
-    esp_err_t err = bsp_audio_init();
-    if (err == ESP_OK)
-        err = bsp_audio_sleep();
-    if (err != ESP_OK)
-        return err;
-    voice_codec_asleep = true;
     usb_serial_jtag_driver_config_t usb = {.tx_buffer_size = 2048, .rx_buffer_size = 2048};
-    err = usb_serial_jtag_driver_install(&usb);
+    esp_err_t err = usb_serial_jtag_driver_install(&usb);
     if (err != ESP_OK)
         return err;
     err = esp_netif_init();
@@ -751,7 +832,8 @@ esp_err_t voice_runtime_init(void) {
     err = esp_event_loop_create_default();
     if (err != ESP_OK)
         return err;
-    if (!esp_netif_create_default_wifi_sta())
+    sta_netif = esp_netif_create_default_wifi_sta();
+    if (!sta_netif)
         return ESP_ERR_NO_MEM;
     wifi_init_config_t wifi = WIFI_INIT_CONFIG_DEFAULT();
     err = esp_wifi_init(&wifi);
@@ -783,6 +865,15 @@ esp_err_t voice_runtime_init(void) {
         return ESP_ERR_NO_MEM;
     if (xTaskCreate(transport_task, "voice_link", 6144, NULL, 3, &transport_worker) != pdPASS)
         return ESP_ERR_NO_MEM;
+    /* The link task is already bringing Wi-Fi up on its own, so the codec is
+       initialized in parallel: a known standby state before the first
+       recording should not sit in front of the whole network start. */
+    err = bsp_audio_init();
+    if (err == ESP_OK)
+        err = bsp_audio_sleep();
+    if (err != ESP_OK)
+        return err;
+    voice_codec_asleep = true;
     if (xTaskCreate(audio_task, "voice_audio", 4096, NULL, 3, &audio_worker) != pdPASS)
         return ESP_ERR_NO_MEM;
     if (xTaskCreate(battery_task, "voice_battery", 3072, NULL, 2, &battery_worker) != pdPASS)

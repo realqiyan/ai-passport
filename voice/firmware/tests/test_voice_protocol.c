@@ -64,6 +64,21 @@ int main(void) {
     assert(!voice_ready_fresh(3001, 1, false));
     assert(!voice_ready_fresh(1, 0, false));
     assert(voice_ready_fresh(5, 0xfffffff0u, false));
+    /* A cached lease is trusted for its own network only. */
+    assert(voice_ip_cache_usable(true, "home", "home", 0xc0a81feeu, 0xffffff00u));
+    assert(!voice_ip_cache_usable(false, "home", "home", 0xc0a81feeu, 0xffffff00u));
+    assert(!voice_ip_cache_usable(true, "home", "other", 0xc0a81feeu, 0xffffff00u));
+    assert(!voice_ip_cache_usable(true, "", "home", 0xc0a81feeu, 0xffffff00u));
+    assert(!voice_ip_cache_usable(true, "home", "home", 0, 0xffffff00u));
+    assert(!voice_ip_cache_usable(true, "home", "home", UINT32_MAX, 0xffffff00u));
+    assert(!voice_ip_cache_usable(true, "home", "home", 0xc0a81feeu, 0));
+    /* A guess nobody reached is replaced by a real lease after 5 s. */
+    assert(!voice_ip_cache_stale(0, 0, false));
+    assert(!voice_ip_cache_stale(4999, 1, false));
+    assert(!voice_ip_cache_stale(5000, 1, false));
+    assert(voice_ip_cache_stale(5001, 1, false));
+    assert(!voice_ip_cache_stale(9999, 1, true));
+    assert(!voice_ip_cache_stale(5, 0xfffffff0u, false));
     assert(!voice_should_blank(29999999, 0, false, false, true));
     assert(voice_should_blank(30000000, 0, false, false, true));
     assert(!voice_should_blank(30000000, 1, false, false, true));
@@ -114,5 +129,5 @@ int main(void) {
     assert(!memcmp(announce, announce_expected, sizeof(announce_expected) - 1));
     /* The packet is sent as exact bytes; a short buffer is refused. */
     assert(!vp_announce(announce, sizeof(announce_expected) - 2));
-    puts("Voice protocol, discovery, announce, idle and battery tests: PASS");
+    puts("Voice protocol, discovery, announce, idle, lease and battery tests: PASS");
 }
