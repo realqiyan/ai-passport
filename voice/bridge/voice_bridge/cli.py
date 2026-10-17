@@ -15,7 +15,7 @@ from .hostaudio import CoreAudio, InputSwitcher
 from .protocol import COMMAND, PCM, STATUS, Parser, encode
 from .shortcut import Injector, trusted
 from .transport import SerialLink, TcpLink
-from .discovery import discover_host
+from .discovery import AnnounceListener, discover_host
 from .log import display_value, log, timestamp, persistent_log, StatusLogger
 from .automatic import AutoSelector, can_switch_to_usb
 
@@ -25,6 +25,15 @@ KEYS.update({chr(ord("a") + i): 4 + i for i in range(26)})
 KEYS.update({f"f{i}": 0x39 + i for i in range(1, 13)})
 DEFAULT_TOKEN = state.directory() / "token"
 KEY_NAMES = {code: name for name, code in KEYS.items()}
+# Reconnect attempts start about this often. The attempt's own duration counts
+# toward the interval, so a slow failure does not add a full wait on top of it.
+RECONNECT_INTERVAL = 1.0
+# A device that just announced itself may still be settling its Wi-Fi: for a
+# short window, retry its announced address often, with a short connect timeout,
+# so the first moment it answers is used instead of the next regular poll.
+ANNOUNCE_SETTLE_WINDOW = 6.0
+ANNOUNCE_SETTLE_INTERVAL = 0.3
+ANNOUNCE_SETTLE_TIMEOUT = 0.5
 
 def describe_shortcut(modifiers, key):
     """Name a reported shortcut, and keep raw codes a name cannot express."""
@@ -154,14 +163,18 @@ def open_session(args):
     token = "" if args.serial else read_token(args.token_file)
     reconnecting = getattr(args, "_reconnecting", False)
     if getattr(args, "discover", False):
+        # Only a reconnect may trust an announcement: the first connection still
+        # listens for the whole window so a second Passport cannot be missed.
+        announced = getattr(args, "_announce", None) if reconnecting else None
         try:
-            args.host = discover_host(timeout=1 if reconnecting else 3)
+            args.host = discover_host(timeout=1 if reconnecting else 3, announced=announced)
         except TimeoutError:
             if not args.host_file.is_file() or not args.host_file.read_text().strip():
                 raise
             args.host = args.host_file.read_text().strip()
     link = SerialLink(args.serial) if args.serial else TcpLink(
-        args.host, connect_timeout=1 if reconnecting else 3)
+        args.host, connect_timeout=ANNOUNCE_SETTLE_TIMEOUT if getattr(args, "_announce_settle", False)
+        else (1 if reconnecting else 3))
     session = Session(link)
     try:
         session.request("hello", token=token, **({"timeout": 8} if args.serial else {}))
@@ -258,37 +271,69 @@ def run(args):
             args.discover = automatic
             return details
 
-        while True:
-            try:
-                if selector:
-                    args.serial = selector.usb()
-                    args.discover = not args.serial and (not args.host or failures % 2 == 0)
-                    if not args.serial:
-                        try:
-                            read_token(args.token_file)
-                        except (RuntimeError, ValueError, OSError) as error:
-                            raise ConnectionError(str(error)) from error
-                return _run(args, on_connected=connected)
-            except SwitchToUSB:
-                continue
-            except (ConnectionError, TimeoutError, PermissionError) as error:
-                if isinstance(error, PermissionError) and not selector:
-                    raise
-                if selector and args.serial:
-                    selector.failed(args.serial)
-                if selector and str(error) != last_error:
-                    if last_error is None or getattr(args, "verbose", False):
-                        log(f"连接暂不可用，继续等待：{error}", file=sys.stderr)
-                    last_error = str(error)
-                if waiting_since is None:
-                    waiting_since = time.monotonic()
-                    disconnected_at = timestamp()
-                failures += 1
-                args._reconnecting = True
-                # Use the last address first. Periodic discovery handles DHCP changes.
-                if automatic and getattr(args, "host", None):
-                    args.discover = failures % 2 == 0
-                time.sleep(1)
+        listener = AnnounceListener() if (
+            getattr(args, "auto", False) or getattr(args, "serial", None) is None) else None
+        args._announce = listener
+        try:
+            while True:
+                attempted_at = time.monotonic()
+                try:
+                    if selector:
+                        args.serial = selector.usb()
+                        args.discover = not args.serial and (not args.host or failures % 2 == 0)
+                        if not args.serial:
+                            try:
+                                read_token(args.token_file)
+                            except (RuntimeError, ValueError, OSError) as error:
+                                raise ConnectionError(str(error)) from error
+                    return _run(args, on_connected=connected)
+                except SwitchToUSB:
+                    continue
+                except (ConnectionError, TimeoutError, PermissionError) as error:
+                    if isinstance(error, PermissionError) and not selector:
+                        raise
+                    if selector and args.serial:
+                        selector.failed(args.serial)
+                    if selector and str(error) != last_error:
+                        if last_error is None or getattr(args, "verbose", False):
+                            log(f"连接暂不可用，继续等待：{error}", file=sys.stderr)
+                        last_error = str(error)
+                    if waiting_since is None:
+                        waiting_since = time.monotonic()
+                        disconnected_at = timestamp()
+                    failures += 1
+                    args._reconnecting = True
+                    # Use the last address first. Periodic discovery handles DHCP changes.
+                    if automatic and getattr(args, "host", None):
+                        args.discover = failures % 2 == 0
+                    now = time.monotonic()
+                    # A device that just announced itself may take a moment to
+                    # answer. Its address is known, so skip discovery and poll it
+                    # quickly instead of waiting for the regular interval.
+                    settle = bool(listener is not None and listener.host and
+                                  now - listener.announced_at < ANNOUNCE_SETTLE_WINDOW)
+                    args._announce_settle = settle
+                    if settle:
+                        args.host = listener.host
+                        args.discover = False
+                    # Keep attempt starts near one second apart without stretching
+                    # the wait past the interval when an attempt itself was slow.
+                    remaining = max(0.0, RECONNECT_INTERVAL - (now - attempted_at))
+                    if settle:
+                        remaining = min(remaining, ANNOUNCE_SETTLE_INTERVAL)
+                    if listener is None:
+                        time.sleep(remaining)
+                    elif listener.event.wait(remaining):
+                        # The device announced itself online; retry right away.
+                        listener.event.clear()
+                        if listener.host and listener.host != getattr(args, "host", None):
+                            args.host = listener.host
+                        # The announcement carried the address, so connect to it
+                        # directly instead of opening another listening window.
+                        args.discover = False
+        finally:
+            if listener is not None:
+                listener.close()
 
 def idle_heartbeat(status):
     return bool(status and status.get("idle_heartbeat") is True and
@@ -304,8 +349,12 @@ def _run(args, *, on_connected=None):
     verbose = getattr(args, "verbose", False)
     override = getattr(args, "shortcut", None)
     status_logger = StatusLogger(verbose)
+    announce = getattr(args, "_announce", None)
     try:
         session = open_session(args)
+        # Record the boot after connecting: an announcement that raced with this
+        # attempt belongs to the session just opened, not to a later reboot.
+        boot = announce.generation if announce is not None else None
         initial = session.request("status")
         expected = "usb" if args.serial else "wifi"
         if "auto_transport" in initial:
@@ -343,6 +392,11 @@ def _run(args, *, on_connected=None):
         abandoned = set()
         usb_checked_at = heartbeat
         while True:
+            if announce is not None and announce.generation != boot:
+                # The device announced a fresh boot while this session is
+                # still open locally, so TCP has not noticed the reboot yet.
+                # Drop it now instead of waiting for a retransmit timeout.
+                raise ConnectionError("Device restarted")
             for frame in session.receive():
                 received = time.monotonic()
                 if frame.kind == PCM:

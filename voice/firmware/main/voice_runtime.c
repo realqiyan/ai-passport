@@ -25,6 +25,9 @@
 #include <string.h>
 #include <unistd.h>
 #define VOICE_PORT 8765
+/* Modem sleep can hold back the access point's first frames after a wake, so
+   the radio starts fully awake and returns to low power once this window ends. */
+#define VOICE_WIFI_PS_WAKE_US 15000000
 _Atomic bool voice_mic, voice_audio, voice_wifi_mode;
 _Atomic bool voice_transport_auto = true;
 _Atomic bool voice_recording;
@@ -79,6 +82,11 @@ static int64_t last_status_sent;
    Keep it across deep sleep without writing flash or locking a BSSID. */
 static RTC_DATA_ATTR _Atomic uint32_t last_wifi_channel;
 static _Atomic uint32_t wifi_start_ms, wifi_associated_ms, wifi_ip_ms, wifi_ready_ms;
+/* A fresh address is announced a few times so a lost broadcast cannot hide it. */
+static uint32_t ip_broadcast;
+static uint8_t announce_left;
+static bool announce_wanted;
+static int64_t announce_due;
 bool voice_bridge_ready(void) {
     uint32_t last = voice_wifi_mode ? ready_wifi : ready_usb;
     uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
@@ -110,6 +118,8 @@ static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
         wifi_got_ip = false;
         ip_address = 0;
         ready_wifi = 0;
+        announce_left = 0;
+        announce_wanted = false;
         wifi_associated_ms = wifi_ip_ms = wifi_ready_ms = 0;
         if (wifi_wanted)
             (void)esp_wifi_connect();
@@ -117,6 +127,9 @@ static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP && wifi_wanted) {
         ip_event_got_ip_t *event = data;
         ip_address = event->ip_info.ip.addr;
+        ip_broadcast = (event->ip_info.ip.addr & event->ip_info.netmask.addr) |
+                       ~event->ip_info.netmask.addr;
+        announce_wanted = true;
         wifi_ip_ms = (uint32_t)(esp_timer_get_time() / 1000);
         wifi_got_ip = true;
     }
@@ -149,10 +162,19 @@ static esp_err_t stop_wifi(void) {
     }
     wifi_got_ip = false;
     ip_address = 0;
+    announce_left = 0;
+    announce_wanted = false;
     wifi_associated_ms = wifi_ip_ms = wifi_ready_ms = 0;
     return ESP_OK;
 }
 static void update_wifi(void) {
+    static bool wifi_modem_sleep;
+    if (!wifi_modem_sleep && esp_timer_get_time() >= VOICE_WIFI_PS_WAKE_US) {
+        wifi_modem_sleep = true;
+        esp_err_t err = esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+        if (err != ESP_OK)
+            voice_error = err;
+    }
     /* The bridge selects USB only after opening it. Removing USB falls back
        to configured Wi-Fi after recording has safely stopped. */
     if (voice_transport_auto && !voice_wifi_mode && !usb_serial_jtag_is_connected() &&
@@ -213,15 +235,40 @@ static void update_wifi(void) {
     if (wifi_got_ip && discovery < 0) {
         discovery = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
         if (discovery >= 0) {
+            int one = 1;
             struct sockaddr_in addr = {.sin_family = AF_INET,
                                        .sin_port = htons(VOICE_PORT),
                                        .sin_addr.s_addr = htonl(INADDR_ANY)};
+            (void)setsockopt(discovery, SOL_SOCKET, SO_BROADCAST, &one, sizeof(one));
             if (bind(discovery, (struct sockaddr *)&addr, sizeof(addr)) < 0 ||
                 fcntl(discovery, F_SETFL, O_NONBLOCK) < 0) {
                 close(discovery);
                 discovery = -1;
             }
         }
+    }
+    /* Announce the fresh address so the bridge connects without polling. */
+    if (wifi_got_ip && listener >= 0 && discovery >= 0 && announce_wanted) {
+        announce_wanted = false;
+        announce_left = 3;
+        announce_due = 0;
+    }
+    if (announce_left && discovery >= 0 && esp_timer_get_time() >= announce_due) {
+        uint8_t message[40];
+        size_t size = vp_announce(message, sizeof(message));
+        if (size) {
+            struct sockaddr_in target = {.sin_family = AF_INET,
+                                         .sin_port = htons(VOICE_PORT)};
+            target.sin_addr.s_addr = htonl(INADDR_BROADCAST);
+            (void)sendto(discovery, message, size, 0, (struct sockaddr *)&target, sizeof(target));
+            if (ip_broadcast && ip_broadcast != htonl(INADDR_BROADCAST)) {
+                target.sin_addr.s_addr = ip_broadcast;
+                (void)sendto(discovery, message, size, 0,
+                             (struct sockaddr *)&target, sizeof(target));
+            }
+        }
+        announce_left--;
+        announce_due = esp_timer_get_time() + 200000;
     }
 }
 static void answer_discovery(void) {
@@ -713,7 +760,9 @@ esp_err_t voice_runtime_init(void) {
     err = esp_wifi_set_storage(WIFI_STORAGE_RAM);
     if (err != ESP_OK)
         return err;
-    err = esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+    /* The bridge connects right after a wake. Keep the receiver on during
+       that window; update_wifi() enables modem sleep afterwards. */
+    err = esp_wifi_set_ps(WIFI_PS_NONE);
     if (err != ESP_OK)
         return err;
     err = esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event, NULL);

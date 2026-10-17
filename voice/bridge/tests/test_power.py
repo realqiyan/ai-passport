@@ -20,16 +20,21 @@ class PowerTests(unittest.TestCase):
                 raise ConnectionError('asleep')
             return 0
         with patch('voice_bridge.cli._run', side_effect=attempt), patch(
-                'voice_bridge.cli.time.sleep') as pause:
+                'voice_bridge.cli.time.sleep') as pause, patch(
+                'voice_bridge.cli.AnnounceListener', return_value=None):
             self.assertEqual(run(args), 0)
         self.assertEqual(attempts, [True, False, True, False, True, False])
         self.assertEqual(retry_modes, [False, True, True, True, True, True])
-        self.assertEqual([call.args[0] for call in pause.call_args_list], [1, 1, 1, 1, 1])
+        # Attempt starts stay about one second apart; the attempt itself counts.
+        self.assertEqual(len(pause.call_args_list), 5)
+        for invocation in pause.call_args_list:
+            self.assertAlmostEqual(invocation.args[0], 1, places=2)
 
     def test_wifi_does_not_retry_bad_credentials(self):
         args = SimpleNamespace(serial=None, host='192.0.2.1', discover=False)
         with patch('voice_bridge.cli._run', side_effect=PermissionError('bad token')) as attempt, patch(
-                'voice_bridge.cli.time.sleep') as pause:
+                'voice_bridge.cli.time.sleep') as pause, patch(
+                'voice_bridge.cli.AnnounceListener', return_value=None):
             with self.assertRaises(PermissionError):
                 run(args)
         attempt.assert_called_once()
@@ -41,12 +46,14 @@ class PowerTests(unittest.TestCase):
                 patch('voice_bridge.cli.time.sleep') as pause:
             self.assertEqual(run(args), 0)
         self.assertEqual(attempt.call_count, 2)
-        pause.assert_called_once_with(1)
+        pause.assert_called_once()
+        self.assertAlmostEqual(pause.call_args.args[0], 1, places=2)
 
     def test_stop_during_wifi_reconnect_wait_exits(self):
         args = SimpleNamespace(serial=None, host='192.0.2.1')
         with patch('voice_bridge.cli._run', side_effect=TimeoutError('offline')), patch(
-                'voice_bridge.cli.time.sleep', side_effect=KeyboardInterrupt):
+                'voice_bridge.cli.time.sleep', side_effect=KeyboardInterrupt), patch(
+                'voice_bridge.cli.AnnounceListener', return_value=None):
             with self.assertRaises(KeyboardInterrupt):
                 run(args)
 

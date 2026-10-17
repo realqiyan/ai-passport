@@ -1,4 +1,6 @@
 import json
+from pathlib import Path
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, call, patch
@@ -82,6 +84,8 @@ class RecordingTests(unittest.TestCase):
                              for item in session.send.call_args_list))
 
     def test_cli_accepts_shortcut_option(self):
-        with patch('voice_bridge.cli.run') as run:
+        with tempfile.TemporaryDirectory() as directory, \
+                patch('voice_bridge.cli.state.directory', return_value=Path(directory)), \
+                patch('voice_bridge.cli.run') as run:
             self.assertEqual(main(['run', '--serial', 'test', '--shortcut', 'cmd+shift+space']), 0)
         self.assertEqual(run.call_args.args[0].shortcut, (10, 44))

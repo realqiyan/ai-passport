@@ -3,11 +3,13 @@ from pathlib import Path
 import socket
 import tempfile
 import threading
+import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
 from voice_bridge import discovery
-from voice_bridge.cli import configure, open_session
+from voice_bridge.cli import ANNOUNCE_SETTLE_TIMEOUT, configure, open_session
 
 
 class DiscoveryTests(unittest.TestCase):
@@ -65,6 +67,84 @@ class DiscoveryTests(unittest.TestCase):
             self.assertEqual(discovery.broadcast_addresses(),
                              ["192.0.2.255", "198.51.100.255", "255.255.255.255"])
 
+    def test_announced_address_ends_the_listening_window_early(self):
+        """A device that just announced itself must not wait out the window."""
+        announced = Mock(host="192.0.2.9")
+        announced.event.is_set.return_value = True
+        started = time.monotonic()
+        with patch.object(discovery, "broadcast_addresses", return_value=["127.0.0.1"]):
+            self.assertEqual(discovery.discover_host(timeout=1, announced=announced), "192.0.2.9")
+        self.assertLess(time.monotonic() - started, 0.5)
+
+    def test_reconnect_discovery_waits_without_a_fresh_announcement(self):
+        announced = Mock(host=None)
+        announced.event.is_set.return_value = True
+        with patch.object(discovery, "broadcast_addresses", return_value=["127.0.0.1"]):
+            with self.assertRaises(TimeoutError):
+                discovery.discover_host(timeout=0.05, announced=announced)
+
+
+    def test_announce_listener_reports_the_device_address(self):
+        channel = Mock()
+        channel.recvfrom.side_effect = [
+            (discovery.ANNOUNCE, ("192.0.2.9", discovery.PORT)), OSError("closed")]
+        with patch.object(discovery.socket, "socket", return_value=channel):
+            listener = discovery.AnnounceListener()
+            try:
+                self.assertTrue(listener.active)
+                self.assertTrue(listener.event.wait(2))
+                self.assertEqual(listener.host, "192.0.2.9")
+                self.assertEqual(listener.generation, 1)
+            finally:
+                listener.close()
+        self.assertFalse(listener.active)
+        # The firmware sends these exact bytes; keep the wire format pinned.
+        self.assertEqual(discovery.ANNOUNCE, b"PASSPORT_VOICE_ANNOUNCE_V1")
+
+    def test_announce_listener_counts_one_generation_per_boot(self):
+        """One boot repeats its announcement; a later boot must stand apart."""
+        channel = Mock()
+        channel.recvfrom.side_effect = [
+            (discovery.ANNOUNCE, ("192.0.2.9", discovery.PORT)),
+            (discovery.ANNOUNCE, ("192.0.2.9", discovery.PORT)),
+            (discovery.ANNOUNCE, ("192.0.2.9", discovery.PORT)),
+            (discovery.ANNOUNCE, ("192.0.2.8", discovery.PORT)),
+            OSError("closed")]
+        clock = iter([10.0, 10.2, 10.4, 20.0])
+        with patch.object(discovery, "time", SimpleNamespace(monotonic=lambda: next(clock))), \
+                patch.object(discovery.socket, "socket", return_value=channel):
+            listener = discovery.AnnounceListener()
+            try:
+                deadline = time.monotonic() + 2
+                while channel.recvfrom.call_count < 5 and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertEqual(channel.recvfrom.call_count, 5)
+                self.assertEqual(listener.generation, 2)
+                self.assertEqual(listener.host, "192.0.2.8")
+                self.assertTrue(listener.event.is_set())
+            finally:
+                listener.close()
+
+    def test_announce_listener_ignores_replies_and_foreign_ports(self):
+        channel = Mock()
+        channel.recvfrom.side_effect = [
+            (discovery.RESPONSE + b"0" * 32, ("192.0.2.9", discovery.PORT)),
+            (discovery.ANNOUNCE, ("192.0.2.9", 9999)),
+            OSError("closed")]
+        with patch.object(discovery.socket, "socket", return_value=channel):
+            listener = discovery.AnnounceListener()
+            listener.close()
+        self.assertIsNone(listener.host)
+        self.assertFalse(listener.event.is_set())
+
+    def test_announce_listener_stays_inactive_when_the_port_is_busy(self):
+        channel = Mock()
+        channel.bind.side_effect = OSError("busy")
+        with patch.object(discovery.socket, "socket", return_value=channel):
+            listener = discovery.AnnounceListener()
+        self.assertFalse(listener.active)
+        listener.close()
+
 
 class DiscoverySessionTests(unittest.TestCase):
     def setUp(self):
@@ -94,10 +174,32 @@ class DiscoverySessionTests(unittest.TestCase):
         with patch("voice_bridge.cli.discover_host", return_value="192.0.2.2") as find, patch(
                 "voice_bridge.cli.TcpLink") as link, patch("voice_bridge.cli.Session") as session:
             open_session(self.args)
-            find.assert_called_once_with(timeout=1)
+            find.assert_called_once_with(timeout=1, announced=None)
             link.assert_called_once_with("192.0.2.2", connect_timeout=1)
             session.return_value.request.assert_called_once_with("hello", token="a" * 64)
             self.assertEqual(self.host_file.read_text(), "192.0.2.2\n")
+
+    def test_settle_after_an_announcement_shortens_the_connect_deadline(self):
+        """Polling a just-announced address must not hold a long TCP deadline."""
+        self.args._reconnecting = True
+        self.args._announce_settle = True
+        self.host_file.write_text("192.0.2.1\n")
+        with patch("voice_bridge.cli.discover_host", return_value="192.0.2.2") as find, \
+                patch("voice_bridge.cli.TcpLink") as link, patch("voice_bridge.cli.Session") as session:
+            open_session(self.args)
+            find.assert_called_once_with(timeout=1, announced=None)
+            link.assert_called_once_with("192.0.2.2", connect_timeout=ANNOUNCE_SETTLE_TIMEOUT)
+            session.return_value.request.assert_called_once_with("hello", token="a" * 64)
+
+    def test_only_a_reconnect_may_trust_an_announcement(self):
+        listener = object()
+        self.args._announce = listener
+        for reconnecting, announced in ((True, listener), (False, None)):
+            self.args._reconnecting = reconnecting
+            with patch("voice_bridge.cli.discover_host", return_value="192.0.2.2") as find, \
+                    patch("voice_bridge.cli.TcpLink"), patch("voice_bridge.cli.Session"):
+                open_session(self.args)
+            self.assertEqual(find.call_args.kwargs["announced"] is listener, announced is listener)
 
     def test_explicit_address_is_cached_only_after_authentication(self):
         self.args.discover = False

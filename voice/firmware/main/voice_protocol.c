@@ -14,6 +14,13 @@ size_t vp_discovery_reply(const uint8_t *data, size_t size, uint8_t *out, size_t
     memcpy(out + sizeof(response) - 1, data + prefix, 32);
     return result_size;
 }
+size_t vp_announce(uint8_t *out, size_t capacity) {
+    const char message[] = "PASSPORT_VOICE_ANNOUNCE_V1";
+    if (capacity < sizeof(message) - 1)
+        return 0;
+    memcpy(out, message, sizeof(message) - 1);
+    return sizeof(message) - 1;
+}
 static uint32_t crc_step(uint32_t crc, const uint8_t *p, size_t n) {
     while (n--) {
         crc ^= *p++;

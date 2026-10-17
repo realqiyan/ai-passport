@@ -27,6 +27,13 @@ def main():
     defaults += "CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION=y\nCONFIG_BUTTON_PERIOD_TIME_MS=20\n"
     defaults += "CONFIG_ESP_SLEEP_GPIO_ENABLE_INTERNAL_RESISTORS=n\n"
     defaults += "CONFIG_BT_ENABLED=n\nCONFIG_BT_NIMBLE_ENABLED=n\n"
+    # Ask for the last address before a full DHCP cycle so a waking device
+    # is reachable in a fraction of the time, and bind it without the ARP
+    # conflict check: the check costs 1-2 s on every wake, while a conflict
+    # on this single-device LAN only needs a restart. ESP-IDF makes the
+    # offered-address check a three-way choice, so select "no check".
+    defaults += "CONFIG_LWIP_DHCP_RESTORE_LAST_IP=y\n"
+    defaults += "CONFIG_LWIP_DHCP_DOES_NOT_CHECK_OFFERED_IP=y\n"
     files["sdkconfig.defaults"] = defaults.encode()
     display = subprocess.check_output(
         ["git", "show", f"{BASELINE}:components/bsp/src/bsp_display.c"], cwd=target).decode()

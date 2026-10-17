@@ -14,8 +14,8 @@ import unittest
 from unittest.mock import Mock, patch
 
 from voice_bridge.automatic import AutoSelector, can_switch_to_usb, usb_ports
-from voice_bridge.cli import (SwitchToUSB, TerminationRequested, _run, execute,
-                              graceful_termination, run)
+from voice_bridge.cli import (ANNOUNCE_SETTLE_INTERVAL, SwitchToUSB, TerminationRequested,
+                              _run, execute, graceful_termination, run)
 from voice_bridge.log import log, persistent_log
 from voice_bridge.protocol import STATUS
 from voice_bridge.transport import SerialLink
@@ -78,6 +78,7 @@ class AutomaticTests(unittest.TestCase):
                 raise ConnectionError('unplugged')
             return 0
         with patch('voice_bridge.cli.AutoSelector', return_value=selector), \
+                patch('voice_bridge.cli.AnnounceListener', return_value=None), \
                 patch('voice_bridge.cli._run', side_effect=attempt), \
                 patch('voice_bridge.cli.read_token', return_value='a' * 64) as token, \
                 patch('voice_bridge.cli.time.sleep'):
@@ -91,6 +92,7 @@ class AutomaticTests(unittest.TestCase):
         selector = Mock()
         selector.usb.side_effect = [None, 'usb']
         with patch('voice_bridge.cli.AutoSelector', return_value=selector), \
+                patch('voice_bridge.cli.AnnounceListener', return_value=None), \
                 patch('voice_bridge.cli.read_token', side_effect=RuntimeError('missing token')), \
                 patch('voice_bridge.cli._run', return_value=0) as attempt, \
                 patch('voice_bridge.cli.time.sleep'):
@@ -103,11 +105,127 @@ class AutomaticTests(unittest.TestCase):
         selector = Mock()
         selector.usb.side_effect = [None, 'usb']
         with patch('voice_bridge.cli.AutoSelector', return_value=selector), \
+                patch('voice_bridge.cli.AnnounceListener', return_value=None), \
                 patch('voice_bridge.cli.read_token', return_value='a' * 64), \
                 patch('voice_bridge.cli._run', side_effect=[PermissionError('bad token'), 0]) as attempt, \
                 patch('voice_bridge.cli.time.sleep'):
             self.assertEqual(run(args), 0)
         self.assertEqual(attempt.call_count, 2)
+
+    def test_retry_attempts_are_paced_within_one_second(self):
+        """A slow failed attempt must not delay the next start by a full second."""
+        args = SimpleNamespace(auto=False, serial=None, host='test', discover=False,
+                               token_file=Path('token'))
+        ticks = iter([0.0, 0.01, 0.25, 1.0, 2.0, 3.0])
+        with patch('voice_bridge.cli.time.monotonic', side_effect=lambda: next(ticks)), \
+                patch('voice_bridge.cli.time.sleep') as pause, \
+                patch('voice_bridge.cli.AnnounceListener', return_value=None), \
+                patch('voice_bridge.cli._run',
+                      side_effect=[ConnectionError('slow'), ConnectionError('slow'), 0]):
+            self.assertEqual(run(args), 0)
+        self.assertEqual([invocation.args[0] for invocation in pause.call_args_list], [0.75, 0.0])
+
+    def test_device_announcement_cuts_the_reconnect_wait_short(self):
+        """A device that announces itself online must not wait for the next poll."""
+        args = SimpleNamespace(auto=False, serial=None, host='192.0.2.1', discover=False,
+                               token_file=Path('token'))
+        listener = Mock(host='192.0.2.9', announced_at=0.0)
+        listener.event.wait.return_value = True
+        with patch('voice_bridge.cli.AnnounceListener', return_value=listener), \
+                patch('voice_bridge.cli._run',
+                      side_effect=[ConnectionError('asleep'), 0]) as attempt, \
+                patch('voice_bridge.cli.time.sleep') as pause:
+            self.assertEqual(run(args), 0)
+        self.assertEqual(attempt.call_count, 2)
+        self.assertEqual(args.host, '192.0.2.9')
+        self.assertIs(args._announce, listener)
+        self.assertEqual(listener.event.wait.call_count, 1)
+        self.assertTrue(0.0 < listener.event.wait.call_args.args[0] <= 1.0)
+        listener.event.clear.assert_called_once()
+        listener.close.assert_called_once()
+        pause.assert_not_called()
+
+    def test_announced_settle_polls_the_known_address_quickly(self):
+        """A fresh announcement polls its address before the regular interval."""
+        args = SimpleNamespace(auto=False, serial=None, host='192.0.2.1', discover=True,
+                               token_file=Path('token'))
+        listener = Mock(host='192.0.2.9', announced_at=100.0)
+        listener.event.wait.return_value = False
+        ticks = iter([100.05, 100.1, 100.2, 100.3, 100.4, 100.5])
+        with patch('voice_bridge.cli.time.monotonic', side_effect=lambda: next(ticks)), \
+                patch('voice_bridge.cli.time.sleep') as pause, \
+                patch('voice_bridge.cli.AnnounceListener', return_value=listener), \
+                patch('voice_bridge.cli._run',
+                      side_effect=[ConnectionError('asleep'), ConnectionError('asleep'), 0]):
+            self.assertEqual(run(args), 0)
+        self.assertEqual(args.host, '192.0.2.9')
+        self.assertFalse(args.discover)
+        self.assertTrue(args._announce_settle)
+        self.assertEqual(listener.event.wait.call_args.args[0], ANNOUNCE_SETTLE_INTERVAL)
+        pause.assert_not_called()
+
+    def test_announced_new_boot_drops_a_session_tcp_still_calls_open(self):
+        """A reboot can leave a dead session that only TCP retransmits notice."""
+        session = Mock()
+        session.request.return_value = {'transport': 'wifi'}
+        announce = Mock(generation=1)
+
+        def receive():
+            announce.generation = 2
+            return []
+
+        session.receive.side_effect = receive
+        args = SimpleNamespace(serial=None, host='192.0.2.1', output='test', mic_device='',
+                               _announce=announce)
+        with patch('voice_bridge.cli.open_session', return_value=session), \
+                patch('voice_bridge.audio.AudioSink'), patch('voice_bridge.cli.Injector'), \
+                patch('voice_bridge.cli.trusted', return_value=True):
+            with self.assertRaisesRegex(ConnectionError, 'restarted'):
+                _run(args)
+        session.link.close.assert_called_once()
+
+    def test_announced_retry_connects_to_the_address_without_discovery(self):
+        """The announcement already named the device; do not reopen a window."""
+        args = SimpleNamespace(auto=False, serial=None, host='192.0.2.1', discover=True,
+                               token_file=Path('token'))
+        listener = Mock(host='192.0.2.9', announced_at=0.0)
+        listener.event.wait.return_value = True
+        discovered = []
+
+        def attempt(args, **kwargs):
+            discovered.append(args.discover)
+            if len(discovered) < 3:
+                raise ConnectionError('asleep')
+            return 0
+
+        with patch('voice_bridge.cli.AnnounceListener', return_value=listener), \
+                patch('voice_bridge.cli._run', side_effect=attempt), \
+                patch('voice_bridge.cli.time.sleep') as pause:
+            self.assertEqual(run(args), 0)
+        # The second failure would normally run discovery; the announcement
+        # arrived first, so both retries connected straight to the address.
+        self.assertEqual(discovered, [True, False, False])
+        pause.assert_not_called()
+
+    def test_announcement_during_connect_keeps_the_fresh_session(self):
+        """An announcement that raced with this attempt names this session's boot."""
+        session = Mock()
+        session.request.return_value = {'transport': 'wifi'}
+        announce = Mock(generation=1)
+
+        def connect(args):
+            announce.generation = 2  # the device announced while we connected
+            return session
+
+        session.receive.side_effect = KeyboardInterrupt
+        args = SimpleNamespace(serial=None, host='192.0.2.1', output='test', mic_device='',
+                               _announce=announce)
+        with patch('voice_bridge.cli.open_session', side_effect=connect), \
+                patch('voice_bridge.audio.AudioSink'), patch('voice_bridge.cli.Injector'), \
+                patch('voice_bridge.cli.trusted', return_value=True):
+            with self.assertRaises(KeyboardInterrupt):
+                _run(args)
+        session.link.close.assert_called_once()
 
     def test_transport_negotiation_discards_old_frames_before_ready(self):
         session = Mock(pending=['old wifi status'])
@@ -189,7 +307,8 @@ def wait(args, **kwargs):
             time.sleep(0.01)
     finally:
         print('cleanup ran', flush=True)
-with patch('voice_bridge.cli._run', side_effect=wait):
+with patch('voice_bridge.cli._run', side_effect=wait), \
+        patch('voice_bridge.cli.AnnounceListener', return_value=None):
     sys.exit(execute(SimpleNamespace(command='run', serial=None, discover=False)))
 '''
         process = subprocess.Popen([sys.executable, '-c', code], stdout=subprocess.PIPE,

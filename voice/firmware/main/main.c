@@ -86,13 +86,7 @@ void app_main(void) {
     inputs = xQueueCreate(12, sizeof(input_t));
     if (!inputs)
         return;
-    if (bsp_display_init() != ESP_OK || !bsp_lvgl_init())
-        return;
-    if (!bsp_lvgl_lock(1000))
-        return;
-    ui_create();
-    bsp_lvgl_unlock();
-    bsp_display_backlight(25);
+    /* Bring the network up before the screen: a waking user waits on Wi-Fi. */
     esp_err_t err = nvs_flash_init(); /* Never erase NVS to hide an error. */
     if (err == ESP_OK)
         err = voice_runtime_init();
@@ -100,6 +94,13 @@ void app_main(void) {
         voice_error = err;
         message = "Startup failed";
     }
+    if (bsp_display_init() != ESP_OK || !bsp_lvgl_init())
+        return;
+    if (!bsp_lvgl_lock(1000))
+        return;
+    ui_create();
+    bsp_lvgl_unlock();
+    bsp_display_backlight(25);
     bool buttons_ok = bsp_button_init(button, NULL) == ESP_OK;
     if (!buttons_ok)
         message = "Buttons unavailable";

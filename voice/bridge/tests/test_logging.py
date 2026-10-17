@@ -99,6 +99,7 @@ class LoggingTests(unittest.TestCase):
             with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr), \
                     patch("voice_bridge.cli.discover_host", side_effect=TimeoutError("no discovery")), \
                     patch("voice_bridge.cli.TcpLink", side_effect=ConnectionError("asleep")) as link, \
+                    patch("voice_bridge.cli.AnnounceListener", return_value=None), \
                     patch("voice_bridge.cli.time.sleep", side_effect=[None, None, None, KeyboardInterrupt]):
                 with self.assertRaises(KeyboardInterrupt):
                     run(args)
@@ -122,8 +123,10 @@ class LoggingTests(unittest.TestCase):
             return 0
 
         with patch("voice_bridge.cli._run", side_effect=attempt), \
+                patch("voice_bridge.cli.AnnounceListener", return_value=None), \
                 patch("voice_bridge.cli.time.sleep"), \
-                patch("voice_bridge.cli.time.monotonic", side_effect=[10, 14, 20, 23]), \
+                patch("voice_bridge.cli.time.monotonic",
+                      side_effect=[10, 10, 10.01, 10.5, 10.51, 11, 14, 20, 20.01, 20.5, 23]), \
                 patch("voice_bridge.cli.timestamp", side_effect=[STAMP, "2026-10-07 08:10:00.000+08:00"]):
             self.assertEqual(run(args), 0)
         self.assertEqual(attempts, [False, True, True, True])
@@ -337,6 +340,7 @@ class LoggingTests(unittest.TestCase):
                 raise next(errors)
             with patch('voice_bridge.cli.AutoSelector', return_value=selector), \
                     patch('voice_bridge.cli.read_token', return_value='a' * 64), \
+                    patch('voice_bridge.cli.AnnounceListener', return_value=None), \
                     patch('voice_bridge.cli._run', side_effect=attempt), \
                     patch('voice_bridge.cli.time.monotonic', side_effect=range(0, 3600, 60)), \
                     patch('voice_bridge.cli.time.sleep'), patch('voice_bridge.cli.log') as output:
@@ -411,7 +415,9 @@ class LoggingTests(unittest.TestCase):
 
     def test_fatal_error_is_visible_and_each_line_has_a_timestamp(self):
         stderr = io.StringIO()
-        with contextlib.redirect_stderr(stderr), \
+        with tempfile.TemporaryDirectory() as directory, \
+                patch("voice_bridge.cli.state.directory", return_value=Path(directory)), \
+                contextlib.redirect_stderr(stderr), \
                 patch("voice_bridge.log.timestamp", return_value=STAMP), \
                 patch("voice_bridge.cli.run", side_effect=PermissionError("bad token\nconfigure again")):
             self.assertEqual(main(["run", "--host", "192.0.2.1"]), 1)

@@ -108,5 +108,11 @@ int main(void) {
     assert(!vp_discovery_reply(discovery_request, sizeof(discovery_request) - 1, discovery_response, 80));
     discovery_request[0] = '!';
     assert(!vp_discovery_reply(discovery_request, sizeof(discovery_request) - 1, discovery_response, 80));
-    puts("Voice protocol, discovery, idle and battery tests: PASS");
+    uint8_t announce[80];
+    const char announce_expected[] = "PASSPORT_VOICE_ANNOUNCE_V1";
+    assert(vp_announce(announce, sizeof(announce)) == sizeof(announce_expected) - 1);
+    assert(!memcmp(announce, announce_expected, sizeof(announce_expected) - 1));
+    /* The packet is sent as exact bytes; a short buffer is refused. */
+    assert(!vp_announce(announce, sizeof(announce_expected) - 2));
+    puts("Voice protocol, discovery, announce, idle and battery tests: PASS");
 }

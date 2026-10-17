@@ -98,7 +98,9 @@ class LaunchTests(unittest.TestCase):
     def test_module_entry_preserves_package_imports(self):
         # Missing USB ports stop before audio or transport initialization.
         code = "from unittest.mock import patch; import runpy, sys; sys.argv=['voice_bridge.cli','usb']; " + \
-               "p=patch('glob.glob', return_value=[]); p.start(); runpy.run_module('voice_bridge.cli', run_name='__main__')"
+               "p=patch('glob.glob', return_value=[]); p.start(); " + \
+               "q=patch('voice_bridge.log.persistent_log'); q.start(); " + \
+               "runpy.run_module('voice_bridge.cli', run_name='__main__')"
         result = subprocess.run([sys.executable, '-c', code], env=os.environ,
                                 text=True, capture_output=True, timeout=5)
         self.assertEqual(result.returncode, 1)
